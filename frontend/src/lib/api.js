@@ -154,3 +154,35 @@ export const updateToolPolicies = (policies) =>
 // Phase 4: K1 v2 Autonomous Run
 export const k1AutonomousRun = (message) =>
   fetchAPI('/k1/autonomous-run', { method: 'POST', body: JSON.stringify({ message }) });
+
+
+// Phase 5: Task Scheduling
+export const updateTaskSchedule = (taskId, schedule) =>
+  fetchAPI(`/tasks/${taskId}/schedule`, { method: 'PUT', body: JSON.stringify(schedule) });
+export const runTaskNow = (taskId) =>
+  fetchAPI(`/tasks/${taskId}/run-now`, { method: 'POST' });
+export const getSchedulerStatus = () => fetchAPI('/scheduler/status');
+export const pauseScheduler = () => fetchAPI('/scheduler/pause', { method: 'POST' });
+export const resumeScheduler = () => fetchAPI('/scheduler/resume', { method: 'POST' });
+
+// Phase 5: Task Queue
+export const getQueueStatus = () => fetchAPI('/queue/status');
+export const rebalanceQueue = () => fetchAPI('/queue/rebalance', { method: 'POST' });
+
+// Phase 5: Creative Exploration
+export const getCreativityStatus = () => fetchAPI('/creativity/status');
+export const runCreativityNow = () => fetchAPI('/creativity/run', { method: 'POST' });
+export const updateCreativitySettings = (settings) =>
+  fetchAPI('/creativity/settings', { method: 'PUT', body: JSON.stringify(settings) });
+export const acceptCreativeIdea = (ideaId) =>
+  fetchAPI(`/creativity/idea/${ideaId}/accept`, { method: 'POST' });
+export const ignoreCreativeIdea = (ideaId) =>
+  fetchAPI(`/creativity/idea/${ideaId}/ignore`, { method: 'POST' });
+
+// Phase 5: Analytics
+export const getAnalyticsOverview = () => fetchAPI('/analytics/overview');
+export const getAnalyticsAutonomy = () => fetchAPI('/analytics/autonomy');
+export const getAnalyticsTasks = () => fetchAPI('/analytics/tasks');
+export const getAnalyticsTools = () => fetchAPI('/analytics/tools');
+export const getAnalyticsMemory = () => fetchAPI('/analytics/memory');
+export const getAnalyticsProviders = () => fetchAPI('/analytics/providers');

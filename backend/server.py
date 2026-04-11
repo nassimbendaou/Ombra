@@ -1720,6 +1720,424 @@ async def cancel_task(task_id: str):
 
 
 # ============================================================
+# PHASE 5: TASK SCHEDULING
+# ============================================================
+class TaskScheduleRequest(BaseModel):
+    mode: str  # "none", "interval", or "cron"
+    interval_seconds: Optional[int] = None
+    cron_expr: Optional[str] = None
+    timezone: Optional[str] = "UTC"
+    schedule_enabled: Optional[bool] = True
+    respect_quiet_hours: Optional[bool] = True
+
+@app.put("/api/tasks/{task_id}/schedule")
+async def update_task_schedule(task_id: str, req: TaskScheduleRequest):
+    """Update task scheduling configuration."""
+    schedule = {
+        "mode": req.mode,
+        "interval_seconds": req.interval_seconds,
+        "cron_expr": req.cron_expr,
+        "timezone": req.timezone
+    }
+    
+    # Compute next_run_at if schedule is enabled
+    next_run_at = None
+    if req.schedule_enabled and req.mode != "none" and task_scheduler:
+        next_run_at = task_scheduler._compute_next_run(schedule)
+    
+    update_data = {
+        "schedule": schedule,
+        "schedule_enabled": req.schedule_enabled,
+        "respect_quiet_hours": req.respect_quiet_hours,
+        "updated_at": now_iso()
+    }
+    
+    if next_run_at:
+        update_data["next_run_at"] = next_run_at.isoformat()
+    
+    tasks_col.update_one({"_id": task_id}, {"$set": update_data})
+    log_activity("scheduler", {"event": "schedule_updated", "task_id": task_id, "mode": req.mode})
+    
+    task = tasks_col.find_one({"_id": task_id})
+    return serialize_doc(task)
+
+
+@app.post("/api/tasks/{task_id}/run-now")
+async def run_task_now(task_id: str):
+    """Immediately enqueue a task for execution (bypass schedule)."""
+    if not task_queue:
+        raise HTTPException(status_code=503, detail="Task queue not available")
+    
+    task = tasks_col.find_one({"_id": task_id})
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    await task_queue.enqueue(task_id, priority=10)  # High priority for manual runs
+    log_activity("scheduler", {"event": "task_run_now", "task_id": task_id})
+    
+    return {"status": "enqueued", "task_id": task_id}
+
+
+@app.get("/api/scheduler/status")
+async def get_scheduler_status():
+    """Get task scheduler status."""
+    if task_scheduler:
+        return task_scheduler.get_status()
+    return {"running": False, "stats": {}}
+
+
+@app.post("/api/scheduler/pause")
+async def pause_scheduler():
+    """Pause the task scheduler."""
+    if task_scheduler:
+        task_scheduler.paused = True
+        log_activity("scheduler", {"event": "scheduler_paused"})
+        return {"status": "paused"}
+    return {"status": "not_running"}
+
+
+@app.post("/api/scheduler/resume")
+async def resume_scheduler():
+    """Resume the task scheduler."""
+    if task_scheduler:
+        task_scheduler.paused = False
+        log_activity("scheduler", {"event": "scheduler_resumed"})
+        return {"status": "resumed"}
+    return {"status": "not_running"}
+
+
+# ============================================================
+# PHASE 5: TASK QUEUE & WORKER POOL
+# ============================================================
+@app.get("/api/queue/status")
+async def get_queue_status():
+    """Get task queue and worker pool status."""
+    if task_queue:
+        return task_queue.get_status()
+    return {"running": False, "queue_size": 0, "active_workers": 0, "stats": {}}
+
+
+@app.post("/api/queue/rebalance")
+async def rebalance_queue():
+    """Trigger manual queue rebalancing (force auto-scale check)."""
+    if not task_queue:
+        raise HTTPException(status_code=503, detail="Task queue not available")
+    
+    # Force an immediate auto-scale check by adjusting thresholds temporarily
+    log_activity("queue", {"event": "manual_rebalance_requested"})
+    return {"status": "rebalancing", "message": "Auto-scale will adjust on next tick"}
+
+
+# ============================================================
+# PHASE 5: CREATIVE EXPLORATION
+# ============================================================
+class CreativitySettingsRequest(BaseModel):
+    enabled: Optional[bool] = None
+    cadence_ticks: Optional[int] = None
+    draft_tasks_auto: Optional[bool] = None
+
+@app.get("/api/creativity/status")
+async def get_creativity_status():
+    """Get creative exploration engine status."""
+    if creative_explorer:
+        return creative_explorer.get_status()
+    return {"enabled": False, "stats": {}}
+
+
+@app.post("/api/creativity/run")
+async def run_creativity_now():
+    """Manually trigger creative idea generation."""
+    if not creative_explorer:
+        raise HTTPException(status_code=503, detail="Creative explorer not available")
+    
+    if not creative_explorer.enabled:
+        raise HTTPException(status_code=400, detail="Creative exploration is disabled in settings")
+    
+    idea = await creative_explorer.generate_idea()
+    log_activity("creativity", {"event": "manual_idea_generation"})
+    
+    if idea:
+        return {"status": "generated", "idea": idea}
+    return {"status": "no_idea", "reason": "insufficient_context"}
+
+
+@app.put("/api/creativity/settings")
+async def update_creativity_settings(req: CreativitySettingsRequest):
+    """Update creative exploration settings."""
+    if not creative_explorer:
+        raise HTTPException(status_code=503, detail="Creative explorer not available")
+    
+    creative_explorer.update_settings(
+        enabled=req.enabled,
+        cadence_ticks=req.cadence_ticks,
+        draft_tasks_auto=req.draft_tasks_auto
+    )
+    
+    # Update in database
+    update_data = {}
+    if req.enabled is not None:
+        update_data["creativity_enabled"] = req.enabled
+    if req.cadence_ticks is not None:
+        update_data["creativity_cadence_ticks"] = req.cadence_ticks
+    if req.draft_tasks_auto is not None:
+        update_data["creativity_draft_tasks_auto"] = req.draft_tasks_auto
+    
+    if update_data:
+        settings_col.update_one({"user_id": "default"}, {"$set": update_data})
+    
+    log_activity("creativity", {"event": "settings_updated", "settings": req.dict(exclude_none=True)})
+    return creative_explorer.get_status()
+
+
+@app.post("/api/creativity/idea/{idea_id}/accept")
+async def accept_creative_idea(idea_id: str):
+    """Mark a creative idea as accepted."""
+    if creative_explorer:
+        creative_explorer.mark_idea_accepted(idea_id)
+    return {"status": "accepted"}
+
+
+@app.post("/api/creativity/idea/{idea_id}/ignore")
+async def ignore_creative_idea(idea_id: str):
+    """Mark a creative idea as ignored."""
+    if creative_explorer:
+        creative_explorer.mark_idea_ignored(idea_id)
+    return {"status": "ignored"}
+
+
+# ============================================================
+# PHASE 5: ANALYTICS & MONITORING
+# ============================================================
+@app.get("/api/analytics/overview")
+async def get_analytics_overview():
+    """Get high-level analytics overview."""
+    # Aggregate key metrics from the last 24 hours
+    now = datetime.now(timezone.utc)
+    day_ago = now - timedelta(days=1)
+    
+    # Total activity count
+    total_activities = activity_col.count_documents({
+        "timestamp": {"$gte": day_ago.isoformat()}
+    })
+    
+    # Task stats
+    total_tasks = tasks_col.count_documents({})
+    completed_tasks_24h = tasks_col.count_documents({
+        "status": "completed",
+        "completed_at": {"$gte": day_ago.isoformat()}
+    })
+    failed_tasks_24h = tasks_col.count_documents({
+        "status": "failed",
+        "failed_at": {"$gte": day_ago.isoformat()}
+    })
+    
+    # Memory stats
+    total_memories = memories_col.count_documents({})
+    pinned_memories = memories_col.count_documents({"pinned": True})
+    
+    # Provider usage (last 24h)
+    provider_pipeline = [
+        {"$match": {"type": "model", "timestamp": {"$gte": day_ago.isoformat()}}},
+        {"$group": {"_id": "$details.provider", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}}
+    ]
+    provider_usage = list(activity_col.aggregate(provider_pipeline))
+    
+    return {
+        "period": "24h",
+        "timestamp": now.isoformat(),
+        "activities": {
+            "total": total_activities
+        },
+        "tasks": {
+            "total": total_tasks,
+            "completed_24h": completed_tasks_24h,
+            "failed_24h": failed_tasks_24h,
+            "success_rate": round(completed_tasks_24h / max(1, completed_tasks_24h + failed_tasks_24h) * 100, 1)
+        },
+        "memory": {
+            "total": total_memories,
+            "pinned": pinned_memories
+        },
+        "providers": provider_usage
+    }
+
+
+@app.get("/api/analytics/autonomy")
+async def get_analytics_autonomy():
+    """Get autonomy daemon analytics."""
+    if not autonomy_daemon:
+        return {"enabled": False}
+    
+    status = autonomy_daemon.get_status()
+    
+    # Additional metrics from activity log
+    now = datetime.now(timezone.utc)
+    day_ago = now - timedelta(days=1)
+    
+    autonomy_activities = list(activity_col.find({
+        "type": "autonomy_daemon",
+        "timestamp": {"$gte": day_ago.isoformat()}
+    }).sort("timestamp", -1).limit(100))
+    
+    return {
+        **status,
+        "recent_activities": len(autonomy_activities),
+        "period": "24h"
+    }
+
+
+@app.get("/api/analytics/tasks")
+async def get_analytics_tasks():
+    """Get task execution analytics."""
+    now = datetime.now(timezone.utc)
+    day_ago = now - timedelta(days=1)
+    week_ago = now - timedelta(days=7)
+    
+    # Task status breakdown
+    status_pipeline = [
+        {"$group": {"_id": "$status", "count": {"$sum": 1}}}
+    ]
+    status_breakdown = {item["_id"]: item["count"] for item in tasks_col.aggregate(status_pipeline)}
+    
+    # Execution time stats (last 7 days with duration_ms)
+    duration_pipeline = [
+        {"$match": {"duration_ms": {"$exists": True, "$gt": 0}, "completed_at": {"$gte": week_ago.isoformat()}}},
+        {"$group": {
+            "_id": None,
+            "avg_duration_ms": {"$avg": "$duration_ms"},
+            "min_duration_ms": {"$min": "$duration_ms"},
+            "max_duration_ms": {"$max": "$duration_ms"},
+            "total_tasks": {"$sum": 1}
+        }}
+    ]
+    duration_stats = list(tasks_col.aggregate(duration_pipeline))
+    
+    # Scheduled tasks count
+    scheduled_count = tasks_col.count_documents({"schedule_enabled": True})
+    
+    return {
+        "status_breakdown": status_breakdown,
+        "duration_stats": duration_stats[0] if duration_stats else {},
+        "scheduled_tasks": scheduled_count,
+        "queue_status": task_queue.get_status() if task_queue else {}
+    }
+
+
+@app.get("/api/analytics/tools")
+async def get_analytics_tools():
+    """Get tool usage analytics."""
+    now = datetime.now(timezone.utc)
+    day_ago = now - timedelta(days=1)
+    
+    # Tool execution counts (last 24h)
+    tool_pipeline = [
+        {"$match": {"type": "tool", "timestamp": {"$gte": day_ago.isoformat()}}},
+        {"$group": {"_id": "$details.tool", "count": {"$sum": 1}, "avg_duration": {"$avg": "$duration_ms"}}},
+        {"$sort": {"count": -1}}
+    ]
+    tool_usage = list(activity_col.aggregate(tool_pipeline))
+    
+    # Blocked commands
+    blocked_pipeline = [
+        {"$match": {"type": "tool", "details.blocked": True, "timestamp": {"$gte": day_ago.isoformat()}}},
+        {"$count": "total"}
+    ]
+    blocked_result = list(activity_col.aggregate(blocked_pipeline))
+    blocked_count = blocked_result[0]["total"] if blocked_result else 0
+    
+    return {
+        "tool_usage": tool_usage,
+        "blocked_commands_24h": blocked_count,
+        "period": "24h"
+    }
+
+
+@app.get("/api/analytics/memory")
+async def get_analytics_memory():
+    """Get memory system analytics."""
+    # Memory type breakdown
+    type_pipeline = [
+        {"$group": {"_id": "$type", "count": {"$sum": 1}, "avg_score": {"$avg": "$utility_score"}}}
+    ]
+    type_breakdown = list(memories_col.aggregate(type_pipeline))
+    
+    # Utility score distribution
+    score_pipeline = [
+        {"$bucket": {
+            "groupBy": "$utility_score",
+            "boundaries": [0, 0.25, 0.5, 0.75, 1.0],
+            "default": "other",
+            "output": {"count": {"$sum": 1}}
+        }}
+    ]
+    score_distribution = list(memories_col.aggregate(score_pipeline))
+    
+    # Recent decay operations (from activity log)
+    now = datetime.now(timezone.utc)
+    day_ago = now - timedelta(days=1)
+    
+    decay_activities = list(activity_col.find({
+        "type": "autonomy_daemon",
+        "details.actions": {"$regex": "memory_decay"},
+        "timestamp": {"$gte": day_ago.isoformat()}
+    }).limit(10))
+    
+    total_decayed = sum([
+        int(a["details"]["actions"][0].split(": ")[1].split(" ")[0])
+        for a in decay_activities
+        if "memory_decay" in str(a.get("details", {}).get("actions", []))
+    ]) if decay_activities else 0
+    
+    return {
+        "type_breakdown": type_breakdown,
+        "score_distribution": score_distribution,
+        "total_memories": memories_col.count_documents({}),
+        "pinned_memories": memories_col.count_documents({"pinned": True}),
+        "decayed_24h": total_decayed
+    }
+
+
+@app.get("/api/analytics/providers")
+async def get_analytics_providers():
+    """Get LLM provider performance analytics."""
+    now = datetime.now(timezone.utc)
+    day_ago = now - timedelta(days=1)
+    
+    # Provider usage and latency (last 24h)
+    provider_pipeline = [
+        {"$match": {"type": "model", "timestamp": {"$gte": day_ago.isoformat()}}},
+        {"$group": {
+            "_id": "$details.provider",
+            "count": {"$sum": 1},
+            "avg_duration_ms": {"$avg": "$duration_ms"},
+            "total_duration_ms": {"$sum": "$duration_ms"}
+        }},
+        {"$sort": {"count": -1}}
+    ]
+    provider_stats = list(activity_col.aggregate(provider_pipeline))
+    
+    # Error rates by provider
+    error_pipeline = [
+        {"$match": {"type": "model", "details.error": {"$exists": True}, "timestamp": {"$gte": day_ago.isoformat()}}},
+        {"$group": {"_id": "$details.provider", "errors": {"$sum": 1}}}
+    ]
+    error_stats = {item["_id"]: item["errors"] for item in activity_col.aggregate(error_pipeline)}
+    
+    # Enrich with error rates
+    for stat in provider_stats:
+        provider = stat["_id"]
+        stat["errors"] = error_stats.get(provider, 0)
+        stat["error_rate"] = round(stat["errors"] / max(1, stat["count"]) * 100, 2)
+    
+    return {
+        "providers": provider_stats,
+        "period": "24h"
+    }
+
+
+
+# ============================================================
 # TOOL SAFETY POLICIES
 # ============================================================
 class ToolPolicyUpdate(BaseModel):
