@@ -3,7 +3,7 @@
 ## 1. Objectives
 - ✅ **Core agent loop proven end-to-end**: request → memory retrieval → model routing (Ollama vs API) → optional tool execution → learning writebacks → activity logging → response.
 - ✅ **Multi-provider model routing + fallback implemented** across:
-  - **Ollama (local)** with `tinyllama` + **hardware-aware recommendations** for laptop tiers
+  - **Ollama (local)** with `tinyllama` + `mistral` and **hardware-aware recommendations**
   - **Cloud APIs (Anthropic, OpenAI, Gemini)** via **Emergent Universal Key**
 - ✅ **MongoDB memory system implemented** for:
   - short-term conversation history
@@ -18,17 +18,22 @@
   - **self-improving loops** (feedback-driven prompt/provider optimization)
   - **filesystem tool + Telegram integration (outbound)**
   - **memory scoring/decay + deeper intuition**
+- ✅ **Phase 4 completed**: Tool safety hardening + autonomy daemon + Telegram inbound router + Memory Management UI + pause/resume/stop controls.
 
-**Phase 4 Objective (current focus):**
-- 🔜 **Harden tools + governance**, and deliver **true autonomous execution** (pause/resume/cancel + structured plans + tool automation).
-- 🔜 Add **Telegram inbound command router** (polling worker) for remote control.
-- 🔜 Add **Memory Management UI** (search, pin/unpin, score visualization, delete/export).
-- 🔜 Deliver **Enhanced Local Model (Ombra‑K1 v2)**:
-  - more powerful local model (e.g., **Mistral 7B**) via Ollama
-  - **autonomous multitasking**: queue/parallelize tasks and continue independently
-  - **creative exploration**: generate ideas proactively (bounded by permissions + quiet hours)
-  - **smart cloud escalation**: when local is uncertain/blocked, escalate to cloud and **distill learning** back into K1
-  - background worker that periodically: reviews tasks, runs memory decay, generates suggestions, and sends Telegram updates
+**Phase 5 Objective (current focus):**
+- 🔜 **Advanced Task Scheduling**
+  - support **simple schedules** (every X hours/days) and **cron schedules**
+  - scheduling-aware execution respecting permissions + quiet hours
+- 🔜 **Multi-task parallel execution**
+  - bounded concurrency with **intelligent auto-scaling**
+  - robust queueing, fairness, and safeguards
+- 🔜 **Enhanced creative exploration** (internal learning only)
+  - proactive idea generation and task drafting from internal context (memories/tasks/conversations)
+  - safe-by-default and fully auditable
+- 🔜 **Analytics / Monitoring Dashboard**
+  - overview widgets on existing Dashboard + **dedicated Analytics page**
+  - **auto-refresh polling** (5–10s) for real-time-ish operations visibility
+  - provider/tool/task/memory/autonomy performance metrics
 
 ---
 
@@ -135,155 +140,159 @@
 **Status:** ✅ COMPLETED
 
 **Test Results:**
-- Backend: ✅ **100%** - All 31 Phase 4 API endpoints working correctly
+- Backend: ✅ **100%** - All Phase 4 endpoints working correctly
 - Frontend: ✅ **100%** - All Phase 4 UI components and controls working, no regressions detected
-- Zero bugs found in comprehensive end-to-end testing
+- ✅ Added dashboard autonomy controls (pause/resume/stop) and `/api/autonomy/stop`
 
-#### Phase 4 User Stories (target)
-1. **Tool safety hardening**
-   - Terminal allowlist/denylist policies per user
-   - Sandboxed execution profiles (cwd, env restrictions, timeouts)
-   - Secret redaction (tokens, `.env`, ssh keys) in logs + outputs
-   - Filesystem safe roots configurable; per-directory scopes
-   - Write operations: diff preview + confirmation + rollback metadata
+#### Phase 4 User Stories (delivered)
+1. ✅ **Tool safety hardening**
+2. ✅ **True autonomous execution engine** (pause/resume/cancel + daemon pause/resume/stop)
+3. ✅ **Telegram inbound command router**
+4. ✅ **Memory Management UI**
+5. ✅ **Autonomy daemon** (tick loop: ideas/decay/telegram summary triggers)
 
-2. **True autonomous execution engine**
-   - Structured **JSON plans** (steps with tool calls, preconditions, expected outputs)
-   - Executor runs tools automatically when permission exists
-   - Lifecycle controls: **pause / resume / cancel**
-   - Retry/backoff + circuit breaker for flaky providers/tools
-   - Background runner that advances tasks when user is idle (bounded by quiet hours)
+---
 
-3. **Telegram inbound command router**
-   - Polling worker/service
-   - Command router:
-     - `/status` (system status)
-     - `/summary` (daily summary)
-     - `/tasks` (active tasks)
-     - `/run <task_id>` (execute next step)
-     - `/pause <task_id>`, `/resume <task_id>`, `/cancel <task_id>`
-   - Auth model: allowlist chat IDs + optional passphrase
-   - Activity logging for every inbound command
+### Phase 5 — Scheduling + Parallel Autonomy + Creative Exploration + Analytics
+**Goal:** deliver advanced autonomy capabilities and production-grade operational visibility.
 
-4. **Memory Management UI**
-   - Dedicated Memory page:
-     - search + filtering by type
-     - pin/unpin
-     - score visualization (utility, access count, last accessed)
-     - delete + bulk actions
-     - export (JSON) + import
-   - Optional “memory cards” in chat inspector to show what was injected
+**Status:** 🔜 Planned (next)
 
-5. **Enhanced Local Model (Ombra‑K1 v2)**
-   - Default local model upgraded from `tinyllama` to a stronger laptop-compatible option (e.g., **mistral 7B Q4**) with fallback to smaller models when RAM tier is low
-   - Multi-task queue + parallel execution (bounded concurrency)
-   - Creative exploration engine:
-     - periodic “idea sweeps” based on context + pinned memories + active tasks
-     - creates suggestions or drafts new tasks (requires user approval unless in autonomy mode)
-   - Smart cloud escalation:
-     - detect uncertainty/low confidence or repeated tool failures
-     - escalate to cloud, then store distillation rules and/or create new K1 prompts
-   - Improved local reasoning prompt strategy:
-     - structured scratchpad **internally** (not exposed) and concise final answers
-     - stricter format for plans and tool instructions
+#### Phase 5 Scope (approved decisions)
+- Scheduling: ✅ **Both** simple schedules + cron schedules
+- Parallelism: ✅ **Intelligent auto-scaling** bounded by safety limits
+- Creative exploration: ✅ **Internal learning only** (no external browsing/search in Phase 5)
+- Analytics UX: ✅ **Overview on Dashboard + dedicated Analytics page**
+- Updates: ✅ **Auto-refresh polling** (5–10 seconds)
 
-6. **Schedulers / Background Workers (Autonomy Daemon)**
-   - Worker ticks (configurable interval) to:
-     - advance eligible tasks
-     - run memory decay
-     - generate creative ideas
-     - send Telegram summaries if enabled
-   - Respect quiet hours + permissions
-   - Full audit logging + rollback safety
+#### 5.1 Advanced Task Scheduling
+**Backend**
+- Add scheduling fields to `tasks`:
+  - `schedule`: `{ mode: "none"|"interval"|"cron", interval_seconds?, cron_expr?, timezone? }`
+  - `next_run_at`, `last_run_at`, `schedule_enabled`, `missed_runs_policy` (skip/catch-up)
+  - `priority`, `queue_group` (optional)
+- Add scheduler service (supervisor-managed worker or integrated asyncio background task):
+  - computes `next_run_at` for eligible tasks
+  - enqueues runnable tasks into execution queue
+  - respects quiet hours + permissions + global rate limits
+- Add endpoints:
+  - `PUT /api/tasks/{id}/schedule`
+  - `POST /api/tasks/{id}/run-now`
+  - `GET /api/scheduler/status`
+  - `POST /api/scheduler/pause` / `POST /api/scheduler/resume`
 
-7. **Observability + Governance (hardening)**
-   - Trace IDs across model/tool/memory operations
-   - Provider latency dashboards and error rates
-   - Data retention policies
-   - Optional authentication (JWT/RBAC) **only after explicit user approval**
+**Frontend**
+- Task scheduling UI (likely in Tasks detail panel or Tasks page):
+  - Schedule editor: Interval + Cron tabs
+  - Next run time preview
+  - Enable/disable schedule toggle
+  - “Run now” CTA
 
-#### Phase 4 Work Breakdown (implementation plan)
+**Testing**
+- Unit: cron parsing and next_run computation
+- Integration: task transitions + next_run updates
 
-##### 4.1 Tool Safety Hardening
-- Backend:
-  - Add `tool_policies` collection (allowlist/denylist, limits)
-  - Add redaction middleware + output scrubber
-  - Add filesystem safe-roots config and write-confirm workflow
-- Frontend:
-  - Settings → “Tool Safety” section:
-    - allowlist/denylist editor
-    - safe roots manager
-    - log redaction preview
+#### 5.2 Multi-task Parallel Execution (Queue + Workers)
+**Backend**
+- Introduce execution queue abstraction:
+  - `task_queue` collection (or embed queue fields into `tasks`), with `status`, `locked_by`, `locked_at`, `attempts`, `last_error`
+- Worker pool:
+  - configurable hard limits: `max_concurrency_cap`
+  - intelligent scaling: observe latency/errors and adjust active workers
+  - fairness: avoid starving low-priority tasks; honor `priority`
+- Add task lifecycle enhancements:
+  - `in_progress` steps with `step_locks`, `retry/backoff`, circuit-breaker per tool/provider
+- Add endpoints:
+  - `GET /api/queue/status`
+  - `POST /api/queue/rebalance`
+  - `POST /api/tasks/{id}/retry`
 
-##### 4.2 Autonomous Execution Engine (pause/resume/cancel)
-- Backend:
-  - Extend task schema:
-    - `state`: planned/pending/in_progress/paused/cancelled/completed/failed
-    - `plan_json`: structured steps
-    - `current_step_index`, `locks`, `last_error`, `retry_count`
-  - Add endpoints:
-    - `POST /api/tasks/{id}/pause`
-    - `POST /api/tasks/{id}/resume`
-    - `POST /api/tasks/{id}/cancel`
-    - `POST /api/tasks/{id}/execute-next`
-- Frontend:
-  - Task details modal/panel:
-    - plan viewer
-    - controls (pause/resume/cancel)
-    - execution logs + retries
+**Frontend**
+- Add queue status widget on Dashboard:
+  - queued/running/failed/paused counts
+  - active concurrency
+- Add per-task execution telemetry:
+  - last error, retry count, worker id
 
-##### 4.3 Telegram Inbound Command Router
-- Backend:
-  - Create polling worker (supervisor-managed) using python-telegram-bot
-  - Store allowed chat IDs in settings
-  - Implement command handlers mapping to backend actions
-- Frontend:
-  - Settings → Telegram:
-    - allowlist chat IDs
-    - show recent inbound commands
+**Testing**
+- Concurrency tests (locks, race prevention)
+- Failure tests (provider/tool failures → backoff)
 
-##### 4.4 Memory Management UI
-- Backend:
-  - Add endpoints:
-    - `GET /api/memories/search?q=`
-    - `POST /api/memories/export`
-    - `POST /api/memories/import`
-- Frontend:
-  - Add “Memory” route and page
-  - Table + detail drawer + charts (scores over time)
+#### 5.3 Enhanced Creative Exploration (Internal)
+**Backend**
+- Add a “creative exploration engine” with:
+  - configurable cadence (e.g., every N ticks)
+  - input context sources: pinned memories, active tasks, recent conversation topics
+  - outputs: suggestions (white cards) and optionally drafted tasks (requires approval)
+- Add scoring and reinforcement:
+  - track suggestion acceptance → boost patterns
+  - track ignored suggestions → decay/avoid
+- Add endpoints:
+  - `GET /api/creativity/status`
+  - `POST /api/creativity/run`
+  - `PUT /api/creativity/settings`
 
-##### 4.5 Ombra‑K1 v2 (powerful local + multitasking + creativity)
-- Backend:
-  - Add model capability registry (speed, size, strength)
-  - Implement “local confidence” heuristics to trigger cloud escalation
-  - Add creative exploration job that generates suggestions and optional tasks
-  - Add multi-task queue with bounded concurrency
-- Frontend:
-  - Models page:
-    - select default local model
-    - enable creative exploration + schedule
-    - show K1 v2 stats (ideas generated, escalations, distillations)
+**Frontend**
+- Settings controls:
+  - enable/disable
+  - cadence slider
+  - “draft tasks automatically” toggle (off by default)
+- Dashboard: enhanced suggestions panel:
+  - show why suggested (top 2 signals)
 
-##### 4.6 Phase 4 Testing and Hardening
-- Add regression suite covering:
-  - tool policies + redaction
-  - pause/resume/cancel flows
-  - autonomous worker tick behavior
-  - Telegram inbound commands
-  - memory UI actions + export/import
-  - escalation logic (local → cloud → distill)
+**Testing**
+- Verify suggestions generated only when enabled
+- Verify no tool execution without permission
+
+#### 5.4 Analytics / Monitoring Dashboard
+**Backend**
+- Add analytics aggregation endpoints (Mongo aggregations) for:
+  - autonomy daemon: ticks/min, pause duration, actions/tick, quiet hours blocks
+  - task execution: success rate, avg duration, retries, failures by tool/provider
+  - tool usage: command counts, blocked command counts, permission denials
+  - memory: total, pinned, average utility, decay removals over time
+  - provider performance: latency/error rate by provider/model
+- Suggested endpoints:
+  - `GET /api/analytics/overview`
+  - `GET /api/analytics/autonomy`
+  - `GET /api/analytics/tasks`
+  - `GET /api/analytics/tools`
+  - `GET /api/analytics/memory`
+  - `GET /api/analytics/providers`
+
+**Frontend**
+- Add **Analytics page** (sidebar route):
+  - Overview cards (KPIs)
+  - Charts (Recharts) with subtle strokes (no heavy gradients)
+  - Filters: time range (24h/7d/30d)
+  - Auto-refresh polling every 5–10s (toggleable)
+- Add Dashboard overview widgets:
+  - small sparkline cards or KPI cards for autonomy/task/provider health
+
+**Testing**
+- Validate aggregations with seeded data
+- Performance checks on large collections
+
+#### 5.5 User Feedback 
+**Status:** Deferred until Phase 5 + Analytics are delivered (per user request)
+- Conduct structured walkthrough of:
+  - autonomy controls
+  - memory management flows
+  - analytics usability
+- Capture feedback and convert to Phase 5.1 patch sprint
 
 ---
 
 ## 3. Next Actions (immediate)
-1. ✅ Completed: Phase 1, Phase 2, Phase 3.
-2. Start Phase 4 in this order:
-   1) Tool safety + governance
-   2) True autonomous execution (pause/resume/cancel + structured plan JSON)
-   3) Background worker/autonomy daemon
-   4) Telegram inbound command router
-   5) Memory management UI + export/import
-   6) Ombra‑K1 v2: upgrade default local model + creativity + multitasking + escalation
+1. ✅ Completed: Phase 1, Phase 2, Phase 3, Phase 4.
+2. Start Phase 5 in this order:
+   1) Add scheduling schema + scheduler worker + endpoints
+   2) Build execution queue + worker pool with intelligent scaling
+   3) Enhance creative exploration (internal learning only)
+   4) Implement Analytics backend aggregations + endpoints
+   5) Build Analytics UI (overview on Dashboard + dedicated page) with auto-refresh
+   6) Run regression suite + new Phase 5 tests
+   7) Then perform user feedback/refinement cycle (Phase 5.1)
 
 ---
 
@@ -293,69 +302,11 @@
 - ✅ Memory works: recall improves responses; scoring and decay reduce noise.
 - ✅ UI transparency: dashboard + timeline reflect model/tool/memory/agent events.
 - ✅ Phase 3 success (achieved): multi-agent + K1 + tools + Telegram outbound + intuition.
+- ✅ Phase 4 success (achieved): safety hardening + autonomy daemon + Telegram inbound + memory management + autonomy controls.
 
-**Phase 4 success (target):**
-- Safer terminal/filesystem execution with policy controls and redaction
-- True autonomous execution with pause/resume/cancel and structured plans
-- Autonomous background runner (quiet-hours aware)
-- Telegram inbound command router for remote control
-- Memory management UI + export/import
-- Ombra‑K1 v2: stronger local model, multitasking, proactive creativity, and reliable cloud escalation with distillation
-
----
-
-## 5. Phase 4 Implementation Completed
-
-**Date:** April 11, 2026
-
-**Implemented Features:**
-
-### Tool Safety System (`tool_safety.py`)
-- ✅ Allowlist/denylist policy engine
-- ✅ Secret redaction in logs (API keys, tokens, env vars)
-- ✅ Safe execution wrapper with timeout enforcement
-- ✅ Permission-gated tool access
-
-### Autonomy Daemon (`autonomy_daemon.py`)
-- ✅ Background worker running on 60s tick interval
-- ✅ Memory decay (every 10 ticks)
-- ✅ Creative idea generation (every 5 ticks when white-card enabled)
-- ✅ Telegram summary scheduling (every 100 ticks)
-- ✅ Quiet hours support
-- ✅ **Pause/Resume/Stop controls** (Backend + Frontend UI)
-- ✅ Statistics tracking (ticks, ideas, decay runs, etc.)
-
-### Telegram Router (`telegram_router.py`)
-- ✅ Inbound command polling worker
-- ✅ Command handlers: `/status`, `/summary`, `/tasks`, `/pause`, `/resume`, `/cancel`
-- ✅ Chat ID allowlist authentication
-- ✅ Activity logging for all commands
-
-### Memory Management UI (`MemoryManagement.js`)
-- ✅ Dedicated memory management page
-- ✅ Search and filtering by type
-- ✅ Pin/unpin functionality
-- ✅ Utility score visualization
-- ✅ Access count and last accessed tracking
-- ✅ Delete individual memories
-- ✅ Modern UI with card-based layout
-
-### Dashboard Autonomy Controls (`Dashboard.js`)
-- ✅ New "Autonomy Daemon" control card
-- ✅ Real-time status display (Running/Paused/Stopped)
-- ✅ Pause button (visible when running)
-- ✅ Resume button (visible when paused)
-- ✅ Stop button (always visible when daemon is running)
-- ✅ Live statistics (ticks, ideas, decay runs, telegram sent, cloud escalations)
-- ✅ Quiet hours indicator
-
-### API Endpoints Added
-- ✅ `GET /api/autonomy/status`
-- ✅ `POST /api/autonomy/pause`
-- ✅ `POST /api/autonomy/resume`
-- ✅ `POST /api/autonomy/stop` ← NEW
-- ✅ `PUT /api/tasks/{id}/pause`
-- ✅ `PUT /api/tasks/{id}/resume`
-- ✅ `PUT /api/tasks/{id}/cancel`
-
-**Next Step:** Comprehensive Phase 4 end-to-end testing
+**Phase 5 success (target):**
+- Scheduled tasks run reliably with clear next-run visibility and safe quiet-hours behavior
+- Parallel task execution increases throughput without races, runaway loops, or unsafe tool calls
+- Creative exploration produces useful suggestions with reinforcement learning from acceptance
+- Analytics provides operational visibility (health, performance, errors) with minimal UI noise
+- No regressions in Phase 1–4 features; all critical flows covered by automated tests

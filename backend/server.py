@@ -36,6 +36,9 @@ from filesystem_tool import read_file, write_file, list_directory
 from tool_safety import redact_secrets, check_command_policy, create_safe_env, DEFAULT_DENYLIST, DEFAULT_ALLOWLIST
 from autonomy_daemon import AutonomyDaemon
 from telegram_router import TelegramRouter
+from scheduler import TaskScheduler
+from task_queue import TaskQueue
+from creative_exploration import CreativeExplorer
 
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
 DB_NAME = os.environ.get("DB_NAME", "ombra_db")
@@ -65,6 +68,9 @@ tool_policies_col = db["tool_policies"]
 # Daemons (initialized in lifespan)
 autonomy_daemon = None
 telegram_router = None
+task_scheduler = None
+task_queue = None
+creative_explorer = None
 
 # Create indexes
 try:
@@ -554,7 +560,7 @@ class OllamaPullRequest(BaseModel):
 # ============================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global autonomy_daemon, telegram_router
+    global autonomy_daemon, telegram_router, task_scheduler, task_queue, creative_explorer
 
     # Initialize default profile
     if not profiles_col.find_one({"user_id": "default"}):
@@ -575,6 +581,7 @@ async def lifespan(app: FastAPI):
             "quiet_hours_start": "", "quiet_hours_end": "",
             "telegram_chat_id": "", "telegram_enabled": False,
             "hardware_ram": "16gb",
+            "creativity_enabled": False, "creativity_cadence_ticks": 5,
             "created_at": now_iso(), "updated_at": now_iso()
         })
     else:
@@ -617,7 +624,27 @@ async def lifespan(app: FastAPI):
         telegram_router = TelegramRouter(db, route_and_respond, dashboard_summary)
         tg_task = asyncio.create_task(telegram_router.poll_loop())
 
-    log_activity("system", {"event": "startup", "message": "Ombra system started (Phase 4 + autonomy daemon)"})
+    # Start Task Queue with worker pool
+    task_queue = TaskQueue(db, execute_task_step)
+    await task_queue.start()
+
+    # Start Task Scheduler
+    async def enqueue_task(task_id):
+        """Callback for scheduler to enqueue tasks."""
+        await task_queue.enqueue(task_id)
+    
+    task_scheduler = TaskScheduler(db, enqueue_task)
+    scheduler_task = asyncio.create_task(task_scheduler.start())
+
+    # Start Creative Explorer
+    settings = settings_col.find_one({"user_id": "default"}) or {}
+    creative_explorer = CreativeExplorer(db, OLLAMA_URL, EMERGENT_KEY)
+    creative_explorer.update_settings(
+        enabled=settings.get("creativity_enabled", False),
+        cadence_ticks=settings.get("creativity_cadence_ticks", 5)
+    )
+
+    log_activity("system", {"event": "startup", "message": "Ombra system started (Phase 5: Scheduling + Queue + Creativity)"})
     yield
 
     # Cleanup
@@ -625,6 +652,10 @@ async def lifespan(app: FastAPI):
         autonomy_daemon.stop()
     if telegram_router:
         telegram_router.stop()
+    if task_scheduler:
+        task_scheduler.stop()
+    if task_queue:
+        task_queue.stop()
     log_activity("system", {"event": "shutdown", "message": "Ombra system stopped"})
 
 

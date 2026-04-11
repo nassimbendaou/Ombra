@@ -1,30 +1,58 @@
 [
   {
-    "content": "Run comprehensive Phase 4 testing via testing_agent_v3",
-    "status": "completed"
+    "content": "Design and implement task scheduling schema (simple + cron) in MongoDB",
+    "status": "in_progress"
   },
   {
-    "content": "Fix all bugs identified by testing agent (high to low priority)",
-    "status": "completed"
+    "content": "Build scheduler worker service with queue management",
+    "status": "pending"
   },
   {
-    "content": "Verify Memory Management UI functionality",
-    "status": "completed"
+    "content": "Add scheduling API endpoints (PUT /api/tasks/{id}/schedule, POST /api/tasks/{id}/run-now, etc.)",
+    "status": "pending"
   },
   {
-    "content": "Test Autonomy Daemon pause/resume/stop controls end-to-end",
-    "status": "completed"
+    "content": "Implement execution queue + multi-task parallel worker pool with intelligent scaling",
+    "status": "pending"
   },
   {
-    "content": "Validate Tool Safety policy enforcement",
-    "status": "completed"
+    "content": "Add queue management API endpoints (GET /api/queue/status, POST /api/queue/rebalance)",
+    "status": "pending"
   },
   {
-    "content": "Test Telegram Router inbound commands",
-    "status": "completed"
+    "content": "Build creative exploration engine (internal context-based idea generation)",
+    "status": "pending"
   },
   {
-    "content": "Mark Phase 4 as COMPLETED in plan.md after all fixes",
-    "status": "completed"
+    "content": "Add creativity API endpoints (GET /api/creativity/status, POST /api/creativity/run)",
+    "status": "pending"
+  },
+  {
+    "content": "Implement Analytics backend aggregation endpoints (overview, autonomy, tasks, tools, memory, providers)",
+    "status": "pending"
+  },
+  {
+    "content": "Build dedicated Analytics page with charts and auto-refresh",
+    "status": "pending"
+  },
+  {
+    "content": "Add analytics overview widgets to main Dashboard",
+    "status": "pending"
+  },
+  {
+    "content": "Build Task Scheduling UI (schedule editor, interval/cron tabs, next-run preview)",
+    "status": "pending"
+  },
+  {
+    "content": "Test Phase 5 features comprehensively via testing_agent_v3",
+    "status": "pending"
+  },
+  {
+    "content": "Fix any bugs found during testing",
+    "status": "pending"
+  },
+  {
+    "content": "Mark Phase 5 as COMPLETED in plan.md",
+    "status": "pending"
   }
 ]
