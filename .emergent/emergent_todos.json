@@ -1,0 +1,38 @@
+[
+  {
+    "content": "Phase 1: Get integration playbooks (Anthropic/OpenAI/Gemini via Emergent key)",
+    "status": "completed"
+  },
+  {
+    "content": "Phase 1: Install and test Ollama in container",
+    "status": "completed"
+  },
+  {
+    "content": "Phase 1: Create combined POC test script (LLM routing + memory + terminal)",
+    "status": "completed"
+  },
+  {
+    "content": "Phase 1: Run POC and fix until all tests pass - ALL 22 PASSED",
+    "status": "completed"
+  },
+  {
+    "content": "Phase 2: Design agent for UI guidelines",
+    "status": "in_progress"
+  },
+  {
+    "content": "Phase 2: Backend implementation (all modules)",
+    "status": "pending"
+  },
+  {
+    "content": "Phase 2: Frontend implementation (all pages)",
+    "status": "pending"
+  },
+  {
+    "content": "Phase 2: All user stories covered in development and testing",
+    "status": "pending"
+  },
+  {
+    "content": "Phase 2: End to End Testing using Testing Agent",
+    "status": "pending"
+  }
+]
