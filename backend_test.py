@@ -286,8 +286,226 @@ class OmbraAPITester:
             print(f"   Suggestions count: {len(suggestions)}")
         return success
 
+    # ============================================================
+    # PHASE 4 TESTS: AUTONOMY DAEMON
+    # ============================================================
+    def test_autonomy_status(self):
+        """Test autonomy daemon status endpoint"""
+        success, response = self.run_test(
+            "Autonomy Status",
+            "GET",
+            "/autonomy/status",
+            200
+        )
+        if success:
+            print(f"   Running: {response.get('running', False)}")
+            print(f"   Paused: {response.get('paused', False)}")
+            print(f"   Ticks: {response.get('stats', {}).get('ticks', 0)}")
+            print(f"   Ideas generated: {response.get('stats', {}).get('ideas_generated', 0)}")
+        return success, response
+
+    def test_autonomy_pause(self):
+        """Test autonomy daemon pause endpoint"""
+        success, response = self.run_test(
+            "Autonomy Pause",
+            "POST",
+            "/autonomy/pause",
+            200
+        )
+        if success:
+            print(f"   Status: {response.get('status', 'unknown')}")
+        return success
+
+    def test_autonomy_resume(self):
+        """Test autonomy daemon resume endpoint"""
+        success, response = self.run_test(
+            "Autonomy Resume",
+            "POST",
+            "/autonomy/resume",
+            200
+        )
+        if success:
+            print(f"   Status: {response.get('status', 'unknown')}")
+        return success
+
+    def test_autonomy_stop(self):
+        """Test autonomy daemon stop endpoint"""
+        success, response = self.run_test(
+            "Autonomy Stop",
+            "POST",
+            "/autonomy/stop",
+            200
+        )
+        if success:
+            print(f"   Status: {response.get('status', 'unknown')}")
+        return success
+
+    def test_autonomy_force_tick(self):
+        """Test autonomy daemon force tick endpoint"""
+        success, response = self.run_test(
+            "Autonomy Force Tick",
+            "POST",
+            "/autonomy/tick",
+            200
+        )
+        if success:
+            print(f"   Status: {response.get('status', 'unknown')}")
+            print(f"   Result: {response.get('result', {})}")
+        return success
+
+    # ============================================================
+    # PHASE 4 TESTS: MEMORY MANAGEMENT
+    # ============================================================
+    def test_memory_decay(self):
+        """Test memory decay endpoint"""
+        success, response = self.run_test(
+            "Memory Decay",
+            "POST",
+            "/memories/decay",
+            200
+        )
+        if success:
+            print(f"   Decayed: {response.get('decayed', 0)}")
+            print(f"   Removed: {response.get('removed', 0)}")
+        return success
+
+    def test_memory_pin(self, memory_id):
+        """Test memory pin/unpin endpoint"""
+        if not memory_id:
+            print("⚠️  Skipping memory pin test - no memory ID")
+            return True
+            
+        success, response = self.run_test(
+            "Memory Pin",
+            "PUT",
+            f"/memories/{memory_id}/pin?pinned=true",
+            200
+        )
+        if success:
+            print(f"   Pinned: {response.get('pinned', False)}")
+        return success
+
+    # ============================================================
+    # PHASE 4 TESTS: TOOL SAFETY
+    # ============================================================
+    def test_tool_policies_get(self):
+        """Test get tool policies endpoint"""
+        success, response = self.run_test(
+            "Get Tool Policies",
+            "GET",
+            "/tools/policies",
+            200
+        )
+        if success:
+            print(f"   Mode: {response.get('mode', 'unknown')}")
+            print(f"   Denylist items: {len(response.get('denylist', []))}")
+            print(f"   Allowlist items: {len(response.get('allowlist', []))}")
+        return success
+
+    def test_tool_policies_update(self):
+        """Test update tool policies endpoint"""
+        success, response = self.run_test(
+            "Update Tool Policies",
+            "PUT",
+            "/tools/policies",
+            200,
+            data={"mode": "denylist", "denylist": ["rm -rf /", "shutdown"], "allowlist": ["ls", "cat"]}
+        )
+        return success
+
+    def test_terminal_command_safe(self):
+        """Test terminal command execution with safe command"""
+        success, response = self.run_test(
+            "Terminal Safe Command",
+            "POST",
+            "/tools/terminal",
+            200,
+            data={"command": "echo 'Hello World'", "timeout": 10}
+        )
+        if success:
+            print(f"   Success: {response.get('success', False)}")
+            print(f"   Output: {response.get('stdout', '')[:50]}...")
+        return success
+
+    def test_terminal_command_blocked(self):
+        """Test terminal command execution with blocked command"""
+        success, response = self.run_test(
+            "Terminal Blocked Command",
+            "POST",
+            "/tools/terminal",
+            200,
+            data={"command": "rm -rf /", "timeout": 10}
+        )
+        if success:
+            print(f"   Success: {response.get('success', False)}")
+            print(f"   Error: {response.get('error', '')[:50]}...")
+            # Should be blocked, so success=False in response
+            if not response.get('success', True):
+                print("   ✅ Command correctly blocked by safety policy")
+            else:
+                print("   ❌ Command was not blocked - safety policy failed!")
+        return success
+
+    # ============================================================
+    # PHASE 4 TESTS: AGENTS & K1
+    # ============================================================
+    def test_agents_list(self):
+        """Test list agents endpoint"""
+        success, response = self.run_test(
+            "List Agents",
+            "GET",
+            "/agents",
+            200
+        )
+        if success:
+            print(f"   Agents count: {len(response)}")
+            builtin_agents = [a for a in response if a.get('builtin', False)]
+            print(f"   Built-in agents: {len(builtin_agents)}")
+        return success, response
+
+    def test_k1_prompts(self):
+        """Test K1 prompts endpoint"""
+        success, response = self.run_test(
+            "K1 Prompts",
+            "GET",
+            "/k1/prompts",
+            200
+        )
+        if success:
+            print(f"   K1 prompts count: {len(response)}")
+            active_prompts = [p for p in response if p.get('active', False)]
+            print(f"   Active prompts: {len(active_prompts)}")
+        return success
+
+    def test_k1_distillations(self):
+        """Test K1 distillations endpoint"""
+        success, response = self.run_test(
+            "K1 Distillations",
+            "GET",
+            "/k1/distillations",
+            200
+        )
+        if success:
+            print(f"   Distillations count: {len(response)}")
+        return success
+
+    def test_learning_metrics(self):
+        """Test learning metrics endpoint"""
+        success, response = self.run_test(
+            "Learning Metrics",
+            "GET",
+            "/learning/metrics",
+            200
+        )
+        if success:
+            print(f"   Provider performance entries: {len(response.get('provider_performance', {}))}")
+            print(f"   Total feedback: {response.get('total_feedback', 0)}")
+            print(f"   K1 prompts: {len(response.get('k1_prompts', []))}")
+            print(f"   Distillations: {response.get('distillations', 0)}")
+        return success
+
 def main():
-    print("🚀 Starting Ombra API Testing...")
+    print("🚀 Starting Ombra Phase 4 API Testing...")
     print("=" * 60)
     
     tester = OmbraAPITester()
@@ -329,16 +547,59 @@ def main():
     print("\n📋 TASKS & MEMORY TESTS")
     print("-" * 30)
     tester.test_tasks_get()
-    task_id = tester.test_tasks_create()[1] if tester.test_tasks_create()[0] else None
-    tester.test_memories_get()
+    task_success, task_id = tester.test_tasks_create()
+    memories_success = tester.test_memories_get()
     tester.test_white_card_suggestions()
+    
+    # ============================================================
+    # PHASE 4 TESTS
+    # ============================================================
+    
+    # Test Autonomy Daemon
+    print("\n🤖 PHASE 4: AUTONOMY DAEMON TESTS")
+    print("-" * 30)
+    autonomy_success, autonomy_status = tester.test_autonomy_status()
+    if autonomy_success:
+        # Test pause/resume/stop cycle
+        tester.test_autonomy_pause()
+        time.sleep(1)
+        tester.test_autonomy_resume()
+        time.sleep(1)
+        tester.test_autonomy_force_tick()
+        # Note: Not testing stop as it would permanently stop the daemon
+    
+    # Test Memory Management
+    print("\n🧠 PHASE 4: MEMORY MANAGEMENT TESTS")
+    print("-" * 30)
+    tester.test_memory_decay()
+    # Get a memory ID for pin test
+    memories_success, memories_data = tester.run_test("Get Memories for Pin Test", "GET", "/memories", 200)
+    if memories_success and memories_data:
+        memory_id = memories_data[0].get('_id') if memories_data else None
+        tester.test_memory_pin(memory_id)
+    
+    # Test Tool Safety
+    print("\n🛡️  PHASE 4: TOOL SAFETY TESTS")
+    print("-" * 30)
+    tester.test_tool_policies_get()
+    tester.test_tool_policies_update()
+    tester.test_terminal_command_safe()
+    tester.test_terminal_command_blocked()
+    
+    # Test Agents & K1 Learning
+    print("\n🎯 PHASE 4: AGENTS & K1 LEARNING TESTS")
+    print("-" * 30)
+    agents_success, agents_data = tester.test_agents_list()
+    tester.test_k1_prompts()
+    tester.test_k1_distillations()
+    tester.test_learning_metrics()
     
     # Print final results
     print("\n" + "=" * 60)
     print(f"📊 FINAL RESULTS: {tester.tests_passed}/{tester.tests_run} tests passed")
     
     if tester.tests_passed == tester.tests_run:
-        print("🎉 All tests passed! Backend is working correctly.")
+        print("🎉 All tests passed! Phase 4 backend is working correctly.")
         return 0
     else:
         print(f"⚠️  {tester.tests_run - tester.tests_passed} tests failed. Check the logs above.")

@@ -33,6 +33,9 @@ from telegram_bot import (
     format_daily_summary, format_task_list
 )
 from filesystem_tool import read_file, write_file, list_directory
+from tool_safety import redact_secrets, check_command_policy, create_safe_env, DEFAULT_DENYLIST, DEFAULT_ALLOWLIST
+from autonomy_daemon import AutonomyDaemon
+from telegram_router import TelegramRouter
 
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
 DB_NAME = os.environ.get("DB_NAME", "ombra_db")
@@ -57,6 +60,11 @@ prompts_col = db["k1_prompts"]
 feedback_col = db["feedback"]
 learning_col = db["learning_changes"]
 distillation_col = db["k1_distillations"]
+tool_policies_col = db["tool_policies"]
+
+# Daemons (initialized in lifespan)
+autonomy_daemon = None
+telegram_router = None
 
 # Create indexes
 try:
@@ -417,20 +425,30 @@ def execute_terminal_command(command: str, timeout: int = 30):
     if not perms.get("terminal", False):
         return {"success": False, "error": "Permission denied: terminal access not granted", "requires_permission": "terminal"}
 
-    dangerous = ["rm -rf /", "dd if=", "mkfs", ":(){ :|:& };:", "chmod -R 777 /", "shutdown", "reboot", "format"]
-    for d in dangerous:
-        if d in command:
-            return {"success": False, "error": f"Blocked dangerous command pattern: {d}"}
+    # Load policies
+    policies = tool_policies_col.find_one({"user_id": "default"}) or {}
+    policy_check = check_command_policy(command, policies)
+    if not policy_check["allowed"]:
+        log_activity("tool_blocked", {
+            "tool": "terminal", "command": command,
+            "reason": policy_check["reason"], "severity": policy_check["severity"]
+        })
+        return {"success": False, "error": f"Blocked: {policy_check['reason']}", "severity": policy_check["severity"]}
 
     try:
+        safe_env = create_safe_env()
         result = subprocess.run(
             command, shell=True, capture_output=True, text=True, timeout=timeout,
-            cwd="/tmp"
+            cwd="/tmp", env=safe_env
         )
+        # Redact secrets from output
+        stdout = redact_secrets(result.stdout[:2000])
+        stderr = redact_secrets(result.stderr[:1000])
+
         output = {
             "success": result.returncode == 0,
-            "stdout": result.stdout[:2000],
-            "stderr": result.stderr[:1000],
+            "stdout": stdout,
+            "stderr": stderr,
             "return_code": result.returncode,
             "command": command
         }
@@ -439,7 +457,7 @@ def execute_terminal_command(command: str, timeout: int = 30):
             "tool": "terminal",
             "command": command,
             "success": output["success"],
-            "output_preview": (result.stdout[:200] or result.stderr[:200])
+            "output_preview": redact_secrets((result.stdout[:200] or result.stderr[:200]))
         })
 
         return output
@@ -536,6 +554,8 @@ class OllamaPullRequest(BaseModel):
 # ============================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global autonomy_daemon, telegram_router
+
     # Initialize default profile
     if not profiles_col.find_one({"user_id": "default"}):
         profiles_col.insert_one({
@@ -549,13 +569,29 @@ async def lifespan(app: FastAPI):
     if not settings_col.find_one({"user_id": "default"}):
         settings_col.insert_one({
             "user_id": "default",
-            "ollama_url": OLLAMA_URL, "ollama_model": "tinyllama",
+            "ollama_url": OLLAMA_URL, "ollama_model": "mistral",
             "preferred_provider": "auto", "preferred_model": "",
             "learning_enabled": True, "white_card_enabled": False,
             "quiet_hours_start": "", "quiet_hours_end": "",
             "telegram_chat_id": "", "telegram_enabled": False,
             "hardware_ram": "16gb",
             "created_at": now_iso(), "updated_at": now_iso()
+        })
+    else:
+        # Upgrade default model to mistral if still tinyllama
+        settings_col.update_one(
+            {"user_id": "default", "ollama_model": "tinyllama"},
+            {"$set": {"ollama_model": "mistral"}}
+        )
+
+    # Seed default tool policies
+    if not tool_policies_col.find_one({"user_id": "default"}):
+        tool_policies_col.insert_one({
+            "user_id": "default",
+            "mode": "denylist",
+            "denylist": DEFAULT_DENYLIST,
+            "allowlist": DEFAULT_ALLOWLIST,
+            "created_at": now_iso()
         })
 
     # Seed builtin agents
@@ -572,8 +608,23 @@ async def lifespan(app: FastAPI):
             prompt["updated_at"] = now_iso()
             prompts_col.insert_one(prompt)
 
-    log_activity("system", {"event": "startup", "message": "Ombra system started (Phase 3)"})
+    # Start autonomy daemon
+    autonomy_daemon = AutonomyDaemon(db, OLLAMA_URL, EMERGENT_KEY)
+    daemon_task = asyncio.create_task(autonomy_daemon.start())
+
+    # Start Telegram router if token configured
+    if TELEGRAM_TOKEN:
+        telegram_router = TelegramRouter(db, route_and_respond, dashboard_summary)
+        tg_task = asyncio.create_task(telegram_router.poll_loop())
+
+    log_activity("system", {"event": "startup", "message": "Ombra system started (Phase 4 + autonomy daemon)"})
     yield
+
+    # Cleanup
+    if autonomy_daemon:
+        autonomy_daemon.stop()
+    if telegram_router:
+        telegram_router.stop()
     log_activity("system", {"event": "shutdown", "message": "Ombra system stopped"})
 
 
@@ -1558,3 +1609,214 @@ async def get_intuition_suggestions():
             })
 
     return {"suggestions": suggestions, "timestamp": now_iso()}
+
+
+# ============================================================
+# PHASE 4: AUTONOMY DAEMON STATUS + CONTROL
+# ============================================================
+@app.get("/api/autonomy/status")
+async def get_autonomy_status():
+    """Get autonomy daemon status."""
+    if autonomy_daemon:
+        return autonomy_daemon.get_status()
+    return {"running": False, "paused": False, "stats": {}}
+
+
+@app.post("/api/autonomy/pause")
+async def pause_autonomy():
+    """Pause the autonomy daemon."""
+    if autonomy_daemon:
+        autonomy_daemon.paused = True
+        log_activity("autonomy", {"event": "daemon_paused"})
+        return {"status": "paused"}
+    return {"status": "not_running"}
+
+
+@app.post("/api/autonomy/resume")
+async def resume_autonomy():
+    """Resume the autonomy daemon."""
+    if autonomy_daemon:
+        autonomy_daemon.paused = False
+        log_activity("autonomy", {"event": "daemon_resumed"})
+        return {"status": "resumed"}
+    return {"status": "not_running"}
+
+
+@app.post("/api/autonomy/stop")
+async def stop_autonomy():
+    """Stop the autonomy daemon completely."""
+    if autonomy_daemon:
+        autonomy_daemon.stop()
+        log_activity("autonomy", {"event": "daemon_stopped"})
+        return {"status": "stopped"}
+    return {"status": "not_running"}
+
+
+@app.post("/api/autonomy/tick")
+async def force_tick():
+    """Force a daemon tick."""
+    if autonomy_daemon:
+        result = await autonomy_daemon.tick()
+        return {"status": "ticked", "result": result}
+    return {"status": "not_running"}
+
+
+# ============================================================
+# TASK LIFECYCLE (pause/resume/cancel)
+# ============================================================
+@app.put("/api/tasks/{task_id}/pause")
+async def pause_task(task_id: str):
+    tasks_col.update_one({"_id": ObjectId(task_id)}, {"$set": {"status": "paused", "updated_at": now_iso()}})
+    log_activity("autonomy", {"event": "task_paused", "task_id": task_id})
+    task = tasks_col.find_one({"_id": ObjectId(task_id)})
+    return serialize_doc(task)
+
+
+@app.put("/api/tasks/{task_id}/resume")
+async def resume_task(task_id: str):
+    tasks_col.update_one({"_id": ObjectId(task_id)}, {"$set": {"status": "in_progress", "updated_at": now_iso()}})
+    log_activity("autonomy", {"event": "task_resumed", "task_id": task_id})
+    task = tasks_col.find_one({"_id": ObjectId(task_id)})
+    return serialize_doc(task)
+
+
+@app.put("/api/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str):
+    tasks_col.update_one({"_id": ObjectId(task_id)}, {"$set": {"status": "cancelled", "updated_at": now_iso()}})
+    log_activity("autonomy", {"event": "task_cancelled", "task_id": task_id})
+    task = tasks_col.find_one({"_id": ObjectId(task_id)})
+    return serialize_doc(task)
+
+
+# ============================================================
+# TOOL SAFETY POLICIES
+# ============================================================
+class ToolPolicyUpdate(BaseModel):
+    mode: Optional[str] = None
+    denylist: Optional[List[str]] = None
+    allowlist: Optional[List[str]] = None
+
+@app.get("/api/tools/policies")
+async def get_tool_policies():
+    policies = tool_policies_col.find_one({"user_id": "default"})
+    if not policies:
+        return {"mode": "denylist", "denylist": DEFAULT_DENYLIST, "allowlist": DEFAULT_ALLOWLIST}
+    return serialize_doc(policies)
+
+
+@app.put("/api/tools/policies")
+async def update_tool_policies(req: ToolPolicyUpdate):
+    update = {"updated_at": now_iso()}
+    if req.mode:
+        update["mode"] = req.mode
+    if req.denylist is not None:
+        update["denylist"] = req.denylist
+    if req.allowlist is not None:
+        update["allowlist"] = req.allowlist
+    tool_policies_col.update_one({"user_id": "default"}, {"$set": update}, upsert=True)
+    log_activity("system", {"event": "tool_policies_updated"})
+    return await get_tool_policies()
+
+
+# ============================================================
+# AUTONOMOUS MULTITASK EXECUTION (K1 v2)
+# ============================================================
+@app.post("/api/k1/autonomous-run")
+async def k1_autonomous_run(req: ChatRequest):
+    """Ombra-K1 v2: autonomous multitask execution.
+    Uses local model first (Mistral), escalates to cloud if needed,
+    and distills cloud responses for learning."""
+    start_time = time.time()
+    message = req.message
+
+    # 1. Try local model (Mistral) first for creative/autonomous response
+    local_success = False
+    local_response = ""
+    try:
+        ollama_status = await check_ollama_health()
+        if ollama_status["available"]:
+            # Use Mistral for more capable local inference
+            model = "mistral" if "mistral" in str(ollama_status["models"]) else (ollama_status["models"][0] if ollama_status["models"] else "tinyllama")
+
+            # Enhanced K1 prompt with chain-of-thought
+            k1_system = """You are Ombra-K1, an autonomous AI assistant running locally. You are creative, proactive, and capable.
+
+When given a task:
+1. THINK step by step about the best approach
+2. Consider multiple strategies
+3. Provide a comprehensive answer
+4. If you're uncertain, say so clearly - a cloud model will be consulted
+
+Be creative. Suggest novel approaches. Think outside the box."""
+
+            local_response = await call_ollama(message, k1_system, model)
+            # Check quality - if response is too short or uncertain, escalate
+            if local_response and len(local_response.strip()) > 50:
+                # Check for uncertainty markers
+                uncertainty_markers = ["i'm not sure", "i don't know", "i cannot", "i can't", "uncertain", "beyond my"]
+                is_uncertain = any(m in local_response.lower() for m in uncertainty_markers)
+                if not is_uncertain:
+                    local_success = True
+    except Exception:
+        pass
+
+    # 2. If local failed or was uncertain, escalate to cloud
+    cloud_response = ""
+    cloud_provider = ""
+    if not local_success:
+        try:
+            cloud_response = await call_api_provider(
+                message,
+                "You are Ombra, an autonomous AI. Be creative, thorough, and proactive. Provide comprehensive answers.",
+                "anthropic", None
+            )
+            cloud_provider = "anthropic"
+
+            # Distill cloud response for local learning
+            task_sig = categorize_message(message) + ":" + message[:50]
+            distillation = generate_teacher_distillation(cloud_response, task_sig)
+            distillation["provider"] = "anthropic"
+            distillation["model"] = "claude-sonnet-4-5-20250929"
+            distillation_col.insert_one(distillation)
+
+            log_activity("k1_learning", {
+                "event": "cloud_escalation",
+                "reason": "local_uncertain" if local_response else "local_failed",
+                "provider": cloud_provider,
+                "rules_extracted": len(distillation.get("extracted_rules", []))
+            })
+        except Exception:
+            # Fallback to other providers
+            for fp in ["openai", "gemini"]:
+                try:
+                    cloud_response = await call_api_provider(message, "Be creative and thorough.", fp, None)
+                    cloud_provider = fp
+                    break
+                except Exception:
+                    continue
+
+    duration_ms = int((time.time() - start_time) * 1000)
+
+    final_response = local_response if local_success else (cloud_response or local_response or "I couldn't process this request.")
+    source = "local" if local_success else ("cloud" if cloud_response else "local_fallback")
+
+    log_activity("k1_autonomous", {
+        "source": source,
+        "local_success": local_success,
+        "cloud_escalated": bool(cloud_response),
+        "cloud_provider": cloud_provider,
+        "input_preview": message[:100],
+        "output_preview": final_response[:200],
+        "duration_ms": duration_ms
+    })
+
+    return {
+        "response": final_response,
+        "source": source,
+        "local_attempted": True,
+        "local_success": local_success,
+        "cloud_escalated": bool(cloud_response and not local_success),
+        "cloud_provider": cloud_provider or None,
+        "duration_ms": duration_ms,
+        "model_used": "mistral" if local_success else (cloud_provider or "unknown")
+    }

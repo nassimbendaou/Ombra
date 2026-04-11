@@ -8,10 +8,10 @@ import { Progress } from '../components/ui/progress';
 import {
   Zap, MessageSquare, Terminal, Brain, Activity, Clock,
   TrendingUp, ArrowRight, CheckCircle2, Circle, Sparkles,
-  Cpu, Cloud, Database, WifiOff
+  Cpu, Cloud, Database, WifiOff, Bot, Play, Pause, Square, RefreshCw
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { getDashboardSummary, getSystemStatus, getTasks, getActivity, getWhiteCardSuggestions } from '../lib/api';
+import { getDashboardSummary, getSystemStatus, getTasks, getActivity, getWhiteCardSuggestions, getAutonomyStatus, pauseAutonomy, resumeAutonomy, stopAutonomy } from '../lib/api';
 import ActivityItem from '../components/ActivityItem';
 
 export default function Dashboard() {
@@ -20,7 +20,9 @@ export default function Dashboard() {
   const [tasks, setTasks] = useState([]);
   const [recentActivity, setRecentActivity] = useState([]);
   const [suggestions, setSuggestions] = useState([]);
+  const [autonomyStatus, setAutonomyStatus] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [autonomyActionLoading, setAutonomyActionLoading] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -29,22 +31,66 @@ export default function Dashboard() {
       getSystemStatus().catch(() => null),
       getTasks().catch(() => []),
       getActivity(null, 5).catch(() => ({ activities: [] })),
-      getWhiteCardSuggestions().catch(() => ({ suggestions: [] }))
-    ]).then(([s, st, t, a, wc]) => {
+      getWhiteCardSuggestions().catch(() => ({ suggestions: [] })),
+      getAutonomyStatus().catch(() => null)
+    ]).then(([s, st, t, a, wc, auto]) => {
       setSummary(s);
       setStatus(st);
       setTasks(t || []);
       setRecentActivity(a?.activities || []);
       setSuggestions(wc?.suggestions || []);
+      setAutonomyStatus(auto);
       setLoading(false);
     });
   }, []);
 
+  const handlePauseAutonomy = async () => {
+    setAutonomyActionLoading(true);
+    try {
+      await pauseAutonomy();
+      const newStatus = await getAutonomyStatus();
+      setAutonomyStatus(newStatus);
+    } catch (error) {
+      console.error('Failed to pause autonomy:', error);
+    } finally {
+      setAutonomyActionLoading(false);
+    }
+  };
+
+  const handleResumeAutonomy = async () => {
+    setAutonomyActionLoading(true);
+    try {
+      await resumeAutonomy();
+      const newStatus = await getAutonomyStatus();
+      setAutonomyStatus(newStatus);
+    } catch (error) {
+      console.error('Failed to resume autonomy:', error);
+    } finally {
+      setAutonomyActionLoading(false);
+    }
+  };
+
+  const handleStopAutonomy = async () => {
+    setAutonomyActionLoading(true);
+    try {
+      await stopAutonomy();
+      const newStatus = await getAutonomyStatus();
+      setAutonomyStatus(newStatus);
+    } catch (error) {
+      console.error('Failed to stop autonomy:', error);
+    } finally {
+      setAutonomyActionLoading(false);
+    }
+  };
+
   const statusItems = status ? [
     { label: 'Ollama', status: status.ollama?.status, icon: Cpu, detail: status.ollama?.models?.join(', ') || 'No models' },
     { label: 'Cloud API', status: status.cloud_api?.status === 'configured' ? 'online' : 'offline', icon: Cloud, detail: status.cloud_api?.status },
-    { label: 'Memory', status: status.memory?.status, icon: Database, detail: `${status.memory?.memories || 0} memories, ${status.memory?.conversations || 0} convos` },
-    { label: 'Autonomy', status: status.autonomy?.status, icon: Sparkles, detail: `${status.autonomy?.active_tasks || 0} active tasks` },
+    { label: 'Memory', status: status.memory?.status, icon: Database, detail: `${status.memory?.memories || 0} memories` },
+    { label: 'Agents', status: 'online', icon: Bot, detail: `${status.agents?.count || 0} agents` },
+    { label: 'K1 Learning', status: (status.k1?.distillations || 0) > 0 ? 'active' : 'idle', icon: Brain, detail: `${status.k1?.distillations || 0} distillations` },
+    { label: 'Autonomy', status: autonomyStatus?.running ? (autonomyStatus?.paused ? 'idle' : 'active') : 'offline', icon: Sparkles, detail: `${autonomyStatus?.stats?.ticks || 0} ticks, ${autonomyStatus?.stats?.ideas_generated || 0} ideas` },
+    { label: 'Telegram', status: status.telegram?.configured ? 'online' : 'offline', icon: MessageSquare, detail: status.telegram?.configured ? 'Connected' : 'Not set' },
   ] : [];
 
   if (loading) {
@@ -152,6 +198,124 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Row 1.5: Autonomy Control */}
+      {autonomyStatus && (
+        <Card className="bg-card/80 backdrop-blur border-border/60" data-testid="dashboard-autonomy-control-card">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Sparkles className="w-5 h-5 text-[hsl(var(--activity-autonomy))]" />
+                  Autonomy Daemon
+                </CardTitle>
+                <CardDescription className="text-xs mt-1">
+                  Background autonomous execution engine
+                </CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                {autonomyStatus.running && !autonomyStatus.paused && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handlePauseAutonomy}
+                    disabled={autonomyActionLoading}
+                    data-testid="autonomy-pause-button"
+                    className="gap-1.5"
+                  >
+                    <Pause className="w-3.5 h-3.5" />
+                    Pause
+                  </Button>
+                )}
+                {autonomyStatus.running && autonomyStatus.paused && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleResumeAutonomy}
+                    disabled={autonomyActionLoading}
+                    data-testid="autonomy-resume-button"
+                    className="gap-1.5"
+                  >
+                    <Play className="w-3.5 h-3.5" />
+                    Resume
+                  </Button>
+                )}
+                {autonomyStatus.running && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleStopAutonomy}
+                    disabled={autonomyActionLoading}
+                    data-testid="autonomy-stop-button"
+                    className="gap-1.5 hover:border-destructive/50 hover:text-destructive"
+                  >
+                    <Square className="w-3.5 h-3.5" />
+                    Stop
+                  </Button>
+                )}
+                <div className={`px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 ${
+                  autonomyStatus.running && !autonomyStatus.paused
+                    ? 'bg-[hsl(var(--status-ok)/0.15)] text-[hsl(var(--status-ok))] border border-[hsl(var(--status-ok)/0.3)]'
+                    : autonomyStatus.running && autonomyStatus.paused
+                      ? 'bg-[hsl(var(--status-info)/0.15)] text-[hsl(var(--status-info))] border border-[hsl(var(--status-info)/0.3)]'
+                      : 'bg-secondary/50 text-muted-foreground border border-border'
+                }`} data-testid="autonomy-status-badge">
+                  <div className={`w-1.5 h-1.5 rounded-full ${
+                    autonomyStatus.running && !autonomyStatus.paused
+                      ? 'bg-[hsl(var(--status-ok))] animate-ombra-pulse'
+                      : autonomyStatus.running && autonomyStatus.paused
+                        ? 'bg-[hsl(var(--status-info))]'
+                        : 'bg-muted-foreground/40'
+                  }`} />
+                  {autonomyStatus.running && !autonomyStatus.paused ? 'Running' : autonomyStatus.running && autonomyStatus.paused ? 'Paused' : 'Stopped'}
+                </div>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+              <div className="space-y-1">
+                <div className="text-lg font-semibold font-mono-ombra">{autonomyStatus.stats?.ticks || 0}</div>
+                <div className="text-xs text-muted-foreground flex items-center gap-1">
+                  <RefreshCw className="w-3 h-3" /> Total Ticks
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="text-lg font-semibold font-mono-ombra">{autonomyStatus.stats?.ideas_generated || 0}</div>
+                <div className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Sparkles className="w-3 h-3" /> Ideas Generated
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="text-lg font-semibold font-mono-ombra">{autonomyStatus.stats?.decay_runs || 0}</div>
+                <div className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Database className="w-3 h-3" /> Memory Decay Runs
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="text-lg font-semibold font-mono-ombra">{autonomyStatus.stats?.telegram_sent || 0}</div>
+                <div className="text-xs text-muted-foreground flex items-center gap-1">
+                  <MessageSquare className="w-3 h-3" /> Telegram Summaries
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="text-lg font-semibold font-mono-ombra">{autonomyStatus.stats?.cloud_escalations || 0}</div>
+                <div className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Cloud className="w-3 h-3" /> Cloud Escalations
+                </div>
+              </div>
+            </div>
+            {autonomyStatus.quiet_hours_active && (
+              <div className="mt-4 p-2 rounded-lg bg-secondary/30 border border-border/40">
+                <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                  <Clock className="w-3 h-3" />
+                  Quiet hours active - daemon operating in low-activity mode
+                </p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Row 2: Tasks + Suggestions */}
       <div className="grid grid-cols-12 gap-4 lg:gap-6">
