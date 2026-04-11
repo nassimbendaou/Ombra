@@ -1,115 +1,129 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-body {
-    margin: 0;
-    font-family:
-        -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
-        "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
-        sans-serif;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-}
+@layer base {
+  :root {
+    --background: 210 20% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 188 72% 34%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 46%;
+    --accent: 188 72% 34%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 188 72% 34%;
+    --radius: 0.75rem;
+    --surface-0: 210 20% 98%;
+    --surface-1: 0 0% 100%;
+    --surface-2: 210 40% 96%;
+    --shadow-color: 222 47% 11%;
+    --status-ok: 158 64% 40%;
+    --status-warn: 38 92% 50%;
+    --status-err: 0 72% 51%;
+    --status-info: 188 72% 34%;
+    --activity-model: 188 72% 34%;
+    --activity-tool: 158 64% 40%;
+    --activity-memory: 38 92% 50%;
+    --activity-autonomy: 200 90% 55%;
+  }
 
-code {
-    font-family:
-        source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
+  .dark {
+    --background: 220 18% 6%;
+    --foreground: 210 40% 98%;
+    --card: 220 18% 8%;
+    --card-foreground: 210 40% 98%;
+    --popover: 220 18% 8%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 188 72% 42%;
+    --primary-foreground: 220 18% 8%;
+    --secondary: 220 16% 12%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 220 16% 12%;
+    --muted-foreground: 215 20% 70%;
+    --accent: 220 16% 12%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 220 14% 18%;
+    --input: 220 14% 18%;
+    --ring: 188 72% 42%;
+    --surface-0: 220 18% 6%;
+    --surface-1: 220 18% 8%;
+    --surface-2: 220 16% 12%;
+    --shadow-color: 220 40% 2%;
+    --status-ok: 158 64% 44%;
+    --status-warn: 38 92% 54%;
+    --status-err: 0 72% 56%;
+    --status-info: 188 72% 42%;
+    --activity-model: 188 72% 42%;
+    --activity-tool: 158 64% 44%;
+    --activity-memory: 38 92% 54%;
+    --activity-autonomy: 200 90% 60%;
+    --chart-1: 188 72% 42%;
+    --chart-2: 158 64% 44%;
+    --chart-3: 38 92% 54%;
+    --chart-4: 200 90% 60%;
+    --chart-5: 215 20% 70%;
+  }
 }
 
 @layer base {
-    :root {
-        --background: 0 0% 100%;
-        --foreground: 0 0% 3.9%;
-        --card: 0 0% 100%;
-        --card-foreground: 0 0% 3.9%;
-        --popover: 0 0% 100%;
-        --popover-foreground: 0 0% 3.9%;
-        --primary: 0 0% 9%;
-        --primary-foreground: 0 0% 98%;
-        --secondary: 0 0% 96.1%;
-        --secondary-foreground: 0 0% 9%;
-        --muted: 0 0% 96.1%;
-        --muted-foreground: 0 0% 45.1%;
-        --accent: 0 0% 96.1%;
-        --accent-foreground: 0 0% 9%;
-        --destructive: 0 84.2% 60.2%;
-        --destructive-foreground: 0 0% 98%;
-        --border: 0 0% 89.8%;
-        --input: 0 0% 89.8%;
-        --ring: 0 0% 3.9%;
-        --chart-1: 12 76% 61%;
-        --chart-2: 173 58% 39%;
-        --chart-3: 197 37% 24%;
-        --chart-4: 43 74% 66%;
-        --chart-5: 27 87% 67%;
-        --radius: 0.5rem;
-    }
-    .dark {
-        --background: 0 0% 3.9%;
-        --foreground: 0 0% 98%;
-        --card: 0 0% 3.9%;
-        --card-foreground: 0 0% 98%;
-        --popover: 0 0% 3.9%;
-        --popover-foreground: 0 0% 98%;
-        --primary: 0 0% 98%;
-        --primary-foreground: 0 0% 9%;
-        --secondary: 0 0% 14.9%;
-        --secondary-foreground: 0 0% 98%;
-        --muted: 0 0% 14.9%;
-        --muted-foreground: 0 0% 63.9%;
-        --accent: 0 0% 14.9%;
-        --accent-foreground: 0 0% 98%;
-        --destructive: 0 62.8% 30.6%;
-        --destructive-foreground: 0 0% 98%;
-        --border: 0 0% 14.9%;
-        --input: 0 0% 14.9%;
-        --ring: 0 0% 83.1%;
-        --chart-1: 220 70% 50%;
-        --chart-2: 160 60% 45%;
-        --chart-3: 30 80% 55%;
-        --chart-4: 280 65% 60%;
-        --chart-5: 340 75% 55%;
-    }
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  }
 }
 
-@layer base {
-    * {
-        @apply border-border;
-    }
-    body {
-        @apply bg-background text-foreground;
-    }
+@keyframes ombra-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
 }
 
-@layer base {
-    [data-debug-wrapper="true"] {
-        display: contents !important;
-    }
+.animate-ombra-pulse {
+  animation: ombra-pulse 1.2s ease-in-out infinite;
+}
 
-    [data-debug-wrapper="true"] > * {
-        margin-left: inherit;
-        margin-right: inherit;
-        margin-top: inherit;
-        margin-bottom: inherit;
-        padding-left: inherit;
-        padding-right: inherit;
-        padding-top: inherit;
-        padding-bottom: inherit;
-        column-gap: inherit;
-        row-gap: inherit;
-        gap: inherit;
-        border-left-width: inherit;
-        border-right-width: inherit;
-        border-top-width: inherit;
-        border-bottom-width: inherit;
-        border-left-style: inherit;
-        border-right-style: inherit;
-        border-top-style: inherit;
-        border-bottom-style: inherit;
-        border-left-color: inherit;
-        border-right-color: inherit;
-        border-top-color: inherit;
-        border-bottom-color: inherit;
-    }
+@keyframes ombra-glow {
+  0%, 100% { box-shadow: 0 0 8px hsl(var(--primary) / 0.3); }
+  50% { box-shadow: 0 0 20px hsl(var(--primary) / 0.5); }
+}
+
+.animate-ombra-glow {
+  animation: ombra-glow 2s ease-in-out infinite;
+}
+
+.font-mono-ombra {
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: hsl(var(--surface-0));
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.4);
 }
