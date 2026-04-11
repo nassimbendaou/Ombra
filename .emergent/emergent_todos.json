@@ -17,22 +17,22 @@
   },
   {
     "content": "Phase 2: Design agent for UI guidelines",
-    "status": "in_progress"
+    "status": "completed"
   },
   {
     "content": "Phase 2: Backend implementation (all modules)",
-    "status": "pending"
+    "status": "completed"
   },
   {
     "content": "Phase 2: Frontend implementation (all pages)",
-    "status": "pending"
+    "status": "completed"
   },
   {
     "content": "Phase 2: All user stories covered in development and testing",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "content": "Phase 2: End to End Testing using Testing Agent",
-    "status": "pending"
+    "status": "in_progress"
   }
 ]
