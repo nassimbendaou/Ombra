@@ -133,3 +133,24 @@ export const sendTelegramSummary = () => fetchAPI('/telegram/send-summary', { me
 // Intuition
 export const getIntentPrediction = () => fetchAPI('/intuition/prediction');
 export const getIntuitionSuggestions = () => fetchAPI('/intuition/suggestions');
+
+// Phase 4: Autonomy Daemon
+export const getAutonomyStatus = () => fetchAPI('/autonomy/status');
+export const pauseAutonomy = () => fetchAPI('/autonomy/pause', { method: 'POST' });
+export const resumeAutonomy = () => fetchAPI('/autonomy/resume', { method: 'POST' });
+export const stopAutonomy = () => fetchAPI('/autonomy/stop', { method: 'POST' });
+export const forceTick = () => fetchAPI('/autonomy/tick', { method: 'POST' });
+
+// Phase 4: Task Lifecycle
+export const pauseTask = (taskId) => fetchAPI(`/tasks/${taskId}/pause`, { method: 'PUT' });
+export const resumeTask = (taskId) => fetchAPI(`/tasks/${taskId}/resume`, { method: 'PUT' });
+export const cancelTask = (taskId) => fetchAPI(`/tasks/${taskId}/cancel`, { method: 'PUT' });
+
+// Phase 4: Tool Policies
+export const getToolPolicies = () => fetchAPI('/tools/policies');
+export const updateToolPolicies = (policies) =>
+  fetchAPI('/tools/policies', { method: 'PUT', body: JSON.stringify(policies) });
+
+// Phase 4: K1 v2 Autonomous Run
+export const k1AutonomousRun = (message) =>
+  fetchAPI('/k1/autonomous-run', { method: 'POST', body: JSON.stringify({ message }) });
