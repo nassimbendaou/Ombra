@@ -11,7 +11,13 @@
   - user profile + permission state
 - ✅ **V1 web app delivered** (dashboard + chat + permissions + activity timeline + settings + onboarding)
   - transparent, proactive (“white card mode”), safe-by-default permissions
-- ➜ **Next objective (Phase 3)**: expand autonomy/intuition, richer memory retrieval, and plugin readiness (Telegram activation, more tools), plus hardening.
+- ➜ **Updated Phase 3 objective**: evolve Ombra from an assistant into a **true autonomous, multi-agent system** with:
+  - **Ombra-K1** (local “learning” meta-model layer on top of Ollama)
+  - **task planner + executor** (multi-step goals with retries)
+  - **multi-agent delegation** (built-in + user-created agents)
+  - **self-improving loops** (auto prompt/routing/strategy optimization)
+  - **filesystem tool + Telegram integration**
+  - **memory scoring/decay + deeper intuition**
 
 ## 2. Implementation Steps
 
@@ -49,7 +55,7 @@
 **Delivered Features (V1)**
 
 **Backend (FastAPI)**
-- Implemented a unified service in `/app/backend/server.py` with:
+- Implemented unified service in `/app/backend/server.py` with:
   - `/api/chat` orchestrator endpoint: context + memory → router → model call → learning → log → response
   - Model router: complexity scoring; **Ollama-first** for simple; API for complex; robust fallback chain
   - Providers:
@@ -89,48 +95,201 @@
 
 ---
 
-### Phase 3 — Add More Features (expand autonomy + intuition + plugins)
-**Goal:** move from “capable assistant” to “autonomous agent” with deeper planning/execution, better memory retrieval, and plugin/tool expansion.
+### Phase 3 — Autonomous Multi-Agent + Ombra-K1 (expanded autonomy, learning, tools, plugins)
+**Goal:** transform Ombra into a **multi-agent, self-improving autonomous system** with a strong local-first workflow (Ombra-K1) and cloud escalation.
 
-**Planned user stories (Phase 3)**
-1. As a user, I can create **multi-step goals** and Ombra decomposes them into tasks with retries.
-2. As a user, I can see **why Ombra suggested** something (memory links + pattern references).
-3. As a user, I can control **quiet hours** and proactive behavior cadence.
-4. As a user, I can **activate Telegram** by adding a token and receive daily summaries.
-5. As a user, I can view/edit/reset learned profile and manage memories (pin/forget/export subset).
+**Status:** 🔜 READY TO START (scope confirmed)
 
-**Work (recommended next increments)**
-- Autonomy engine (upgrade from CRUD → execution):
-  - planner: generate step list + tool needs + stop conditions
-  - executor loop: run steps, retry/backoff, mark done/failed
-  - background runner (interval) + UI controls (start/stop)
-- “Intuition” MVP:
-  - intent prediction using: last N turns + profile + top memories
-  - proactive suggestion generation grounded in activity + memories
-  - prefetch relevant memories when opening a chat session
-- Memory upgrades:
-  - utility scoring (recency + reinforcement + user feedback)
-  - decay/forgetting + pin/lock
-  - hybrid retrieval (text + metadata); optional embeddings if enabled later
-- Tool & plugin framework:
-  - formal tool registry with scopes
-  - Telegram plugin wiring (still disabled until token provided)
-  - file system tool (behind permissions) for read/write operations
+#### Phase 3 User Stories (updated)
+1. **Multi-step goals**: As a user, I can create a goal, and Ombra decomposes it into steps and executes them with retries.
+2. **Explainability**: As a user, I can see why a suggestion/decision happened (linked memories, patterns, and routing rationale).
+3. **Multi-agent delegation**: As a user, I can run tasks that automatically route to specialist agents (Coder/Researcher/Planner/Executor) and observe handoffs.
+4. **Custom agents**: As a user, I can create custom agents with persona/system prompt, tools, and guardrails.
+5. **Self-improving loops**: As a user, Ombra automatically improves prompts/routing/strategies based on success metrics and feedback; major changes are surfaced for review.
+6. **Ombra-K1 local learning system**: As a user, Ombra runs local-first via Ollama, adapts prompts, manages local models based on laptop specs, and learns from cloud model “teacher” responses.
+7. **Telegram integration**: As a user, I can message Ombra via Telegram and receive daily summaries and notifications.
+8. **Filesystem tool**: As a user, I can allow Ombra to read/write files (permission-gated) for real workflows.
+9. **Memory scoring/decay**: As a user, Ombra’s memory automatically prioritizes useful knowledge, decays stale memories, and lets me pin critical ones.
+10. **Deeper intuition**: As a user, Ombra predicts intent, preloads relevant memories, and proposes proactive next steps.
 
-**End-of-phase testing (Phase 3)**
-- E2E: create goal → tasks generated → execute at least one tool step → full audit trail + daily summary shown.
+#### Phase 3 Work Breakdown (recommended order)
+
+##### 3.1 Agent Framework + Multi-Agent Orchestrator
+- **Backend**
+  - Define `Agent` schema (built-in + user-defined):
+    - `agent_id`, `name`, `role`, `system_prompt`, `tools_allowed`, `provider_preferences`, `temperature`, `guardrails`
+  - Implement `AgentRegistry` (Mongo-backed): create/update/list/delete agents.
+  - Implement `MultiAgentOrchestrator`:
+    - classifies task type → selects agent(s)
+    - supports delegation + handoff logs (agent-to-agent events)
+    - agent execution trace stored in activity timeline
+  - APIs:
+    - `GET/POST/PUT/DELETE /api/agents`
+    - `POST /api/agents/run` (run agent on an input)
+    - extend `/api/chat` to support `agent_id` optional
+
+- **Frontend**
+  - New **Agents** page:
+    - list agents + status + tools + provider preference
+    - create/edit agent modal (system prompt, tools)
+  - Chat enhancements:
+    - optional agent selector (default = Auto)
+
+##### 3.2 Task Planner + Executor Loop (true autonomy)
+- **Backend**
+  - Upgrade tasks from CRUD → **execution engine**:
+    - planner: goal → step list (tool needs, agent assignment, stop conditions)
+    - executor: runs steps, retries with backoff, marks progress
+    - supports human-in-the-loop checkpoints when required permissions missing
+  - APIs:
+    - `POST /api/goals/plan`
+    - `POST /api/tasks/{id}/run`
+    - `POST /api/tasks/{id}/pause` / `resume` / `cancel`
+
+- **Frontend**
+  - Dashboard: show “active executions” with progress
+  - Tasks panel: step breakdown + run/pause/resume
+
+##### 3.3 Ombra-K1 Local Model System (local-first, learns from cloud)
+- **Concept**: Ombra-K1 is not a fine-tuned model; it is a **meta-layer** that:
+  - maintains adaptive system prompts and routing heuristics
+  - chooses the best local Ollama model for the job
+  - escalates to cloud models when needed
+  - distills “teacher” (cloud) outputs into reusable local prompt patterns and memories
+
+- **Backend**
+  - `OmbraK1Manager`:
+    - maintains prompt variants (“prompt library”) with performance stats
+    - generates “optimized system prompts” per agent and task category
+    - teacher-student loop: when cloud used, store:
+      - task signature → cloud response summary → extracted reusable rules
+  - **Hardware-aware model manager**:
+    - user provides/edits config (RAM tier + optional CPU/GPU)
+    - recommended model list per tier:
+      - 8GB: 3B–7B quantized
+      - 16GB: 7B–13B quantized
+      - 32GB+: 13B–34B+ quantized
+    - auto pull models with Ollama (`ollama pull ...`) and track installed
+  - APIs:
+    - `GET /api/ollama/models` (installed)
+    - `GET /api/ollama/recommendations` (based on user config)
+    - `POST /api/ollama/pull`
+    - `GET /api/k1/prompts` + `POST /api/k1/prompts/activate`
+
+- **Frontend**
+  - New **Model Manager** page:
+    - installed models + sizes
+    - recommendations based on user config
+    - pull model button + progress
+  - New **K1 Insights** panel:
+    - “what improved recently” (prompt/routing changes)
+
+##### 3.4 Self-Improving Loops (automatic + transparent for major changes)
+- **Backend**
+  - Collect metrics per:
+    - provider/model
+    - agent
+    - tool execution success
+    - task completion success
+  - Add **user feedback** in chat (thumbs up/down) stored in Mongo
+  - Auto adjustments:
+    - routing thresholds
+    - prompt selection (bandit-style choice among prompt variants)
+    - agent selection weights
+  - “Major change” policy:
+    - new agent prompt baseline OR routing policy shifts require user-visible event
+  - APIs:
+    - `POST /api/feedback`
+    - `GET /api/learning/metrics`
+    - `GET /api/learning/changes` (history)
+
+- **Frontend**
+  - Chat: thumbs up/down per assistant response
+  - New dashboard widget: “Learning Improvements” + metrics
+
+##### 3.5 Memory Scoring / Decay + Pinning
+- **Backend**
+  - Extend memory schema:
+    - `utility_score`, `last_accessed_at`, `access_count`, `pinned`, `decay_rate`
+  - Retrieval:
+    - hybrid: text relevance + utility + recency
+  - Decay job:
+    - periodically reduce utility for stale, unpinned memories
+  - APIs:
+    - `PUT /api/memories/{id}/pin`
+    - `GET /api/memories/search`
+
+- **Frontend**
+  - Memory management page/section:
+    - filter by type, pinned, score
+    - pin/unpin
+
+##### 3.6 Filesystem Tool (permission-gated)
+- **Backend**
+  - Implement safe read/write tools with:
+    - allowed base directories
+    - path sanitization
+    - activity logging
+  - APIs:
+    - `POST /api/tools/fs/read`
+    - `POST /api/tools/fs/write`
+
+- **Frontend**
+  - Add tool cards in chat when file actions happen
+  - Permissions page already supports filesystem toggle
+
+##### 3.7 Telegram Integration (token provided)
+- **Backend**
+  - Store Telegram config in settings
+  - Start Telegram bot worker:
+    - incoming messages → `/api/chat` (session per chat id)
+    - outgoing: daily summary + notifications + task updates
+    - quick commands (e.g., `/summary`, `/tasks`, `/run <task_id>`)
+  - Token provided:
+    - `REDACTED_TELEGRAM_TOKEN`
+  - APIs:
+    - `POST /api/telegram/test`
+    - `POST /api/telegram/send`
+
+- **Frontend**
+  - Settings: Telegram enable + chat id instructions + test button
+
+##### 3.8 Deeper Intuition System
+- **Backend**
+  - Intent prediction:
+    - infer probable user goal using recent turns + pinned memories + profile
+  - Proactive context loading:
+    - prefetch memories and attach to agent context
+  - Suggestion generator:
+    - grounded suggestions with memory/task references
+  - APIs:
+    - `GET /api/intuition/prediction`
+    - `GET /api/intuition/suggestions`
+
+- **Frontend**
+  - Dashboard: “Next best actions” panel
+  - Chat: contextual suggestion chips
+
+#### Phase 3 End-of-phase testing (updated)
+- E2E: create goal → planner generates steps → multi-agent execution runs → tool step reads/writes file → at least one cloud escalation → distilled learning saved → activity timeline shows:
+  - agent delegation events
+  - model calls with providers
+  - memory writebacks with scores
+  - Telegram summary delivered
 
 ---
 
 ### Phase 4 — Hardening, Security, and Optional Auth
-**Goal:** make terminal/tool usage safer, improve reliability and observability, and add optional auth/data controls.
+**Goal:** make tools safer, improve reliability/observability, add governance + optional auth.
+
+**Status:** 🔜 Planned
 
 **Planned user stories (Phase 4)**
-1. As a user, I can run terminal commands with stronger guardrails and see redaction of secrets.
-2. As a user, I can export/delete my data (memories/logs/conversations).
-3. As a user, I can enable authentication once stable.
-4. As a user, I can configure allowed command patterns and working directory.
-5. As a user, I can run Ombra reliably across restarts (state recovery).
+1. Run terminal commands with stronger guardrails and secret redaction.
+2. Export/delete data (memories/logs/conversations).
+3. Optional authentication.
+4. Configure allowed command patterns + working directory.
+5. Reliable restarts with state recovery.
 
 **Work**
 - Terminal hardening:
@@ -138,30 +297,41 @@
   - sandbox directories + resource/time limits
   - secret redaction (env vars, tokens)
 - Observability:
-  - structured logs with trace IDs for chat/tool calls
-  - error dashboards + retry telemetry
+  - structured logs, trace IDs
+  - failure dashboards + retry telemetry
 - Data governance:
   - export/delete endpoints
-  - memory compaction + retention policies
+  - retention policies
 - Optional auth:
-  - JWT-based auth and role-based permissions (only after user approval)
+  - JWT + RBAC (after user approval)
 - Regression + performance testing
 
 ## 3. Next Actions (immediate)
 1. ✅ Completed: POC + full V1 delivery.
-2. Decide Phase 3 scope:
-   - Autonomy execution loop first, or memory improvements first, or Telegram activation first.
-3. If proceeding with Phase 3:
-   - Implement task planner + executor loop + UI controls
-   - Add file system tool behind permissions
-   - Add memory scoring/decay + pinning
-4. Add a small regression suite that runs on each change:
-   - key API endpoints + basic UI navigation checks.
+2. Start Phase 3 in the recommended order:
+   1) Agent framework + orchestrator
+   2) Task planner + executor
+   3) Ombra-K1 prompt library + Ollama model manager
+   4) Self-improving loops + feedback
+   5) Memory scoring/decay + pinning
+   6) Filesystem tool
+   7) Telegram integration activation
+   8) Intuition system upgrades
+3. Add a regression suite for Phase 3:
+   - agent CRUD + goal planning + task execution
+   - model manager endpoints
+   - Telegram test send
 
 ## 4. Success Criteria
-- ✅ Core loop reliability: model routing works with metadata + fallback.
+- ✅ Core loop reliability: routing works with metadata + fallback.
 - ✅ Permissions enforced: no tool runs without explicit grant; all actions logged.
 - ✅ Memory works: recall improves responses; stored info visible via logs/timeline.
 - ✅ UI transparency: dashboard + timeline reflect model/tool/memory events.
 - ✅ White-card mode: proactive suggestions available.
-- ➜ Phase 3 success: multi-step goal execution with retries, grounded suggestions with memory links, and plugin/tool expansion without compromising safety.
+- **Phase 3 success (updated):**
+  - Multi-agent delegation works (built-in + custom agents)
+  - Multi-step goals execute with retries and tool usage
+  - Ombra-K1 improves prompts/routing automatically and distills cloud “teacher” responses
+  - Hardware-aware local model selection/pulling works
+  - Telegram messaging + daily summaries operational
+  - Memory scoring/decay and intuition improve relevance and proactivity

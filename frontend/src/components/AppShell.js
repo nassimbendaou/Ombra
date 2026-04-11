@@ -3,7 +3,7 @@ import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, MessageSquare, Shield, Activity, Settings,
-  ChevronLeft, ChevronRight, Zap, Menu, X
+  ChevronLeft, ChevronRight, Zap, Menu, X, Bot, Cpu
 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Separator } from './ui/separator';
@@ -13,6 +13,8 @@ import StatusIndicator from './StatusIndicator';
 const navItems = [
   { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { path: '/chat', icon: MessageSquare, label: 'Chat' },
+  { path: '/agents', icon: Bot, label: 'Agents' },
+  { path: '/models', icon: Cpu, label: 'Models' },
   { path: '/permissions', icon: Shield, label: 'Permissions' },
   { path: '/activity', icon: Activity, label: 'Activity' },
   { path: '/settings', icon: Settings, label: 'Settings' },

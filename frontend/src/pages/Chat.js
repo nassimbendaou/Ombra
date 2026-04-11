@@ -7,12 +7,12 @@ import { Separator } from '../components/ui/separator';
 import {
   Send, Zap, Trash2, Plus, PanelRightOpen, PanelRightClose,
   Eye, EyeOff, Cpu, Cloud, Sparkles, Globe, Loader2,
-  Terminal, ChevronDown, AlertCircle
+  Terminal, ChevronDown, AlertCircle, ThumbsUp, ThumbsDown, Bot
 } from 'lucide-react';
 import MessageBubble from '../components/MessageBubble';
 import ModelBadge from '../components/ModelBadge';
 import ToolCallCard from '../components/ToolCallCard';
-import { sendChat, getChatHistory, clearChatHistory, executeTerminal } from '../lib/api';
+import { sendChat, getChatHistory, clearChatHistory, executeTerminal, getAgents, submitFeedback } from '../lib/api';
 import { toast } from 'sonner';
 
 const PROVIDERS = [
@@ -36,14 +36,19 @@ export default function Chat() {
   const [lastRouting, setLastRouting] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [showProviderMenu, setShowProviderMenu] = useState(false);
+  const [agents, setAgents] = useState([]);
+  const [selectedAgent, setSelectedAgent] = useState(null);
+  const [showAgentMenu, setShowAgentMenu] = useState(false);
+  const [feedbackGiven, setFeedbackGiven] = useState({});
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
-  // Load sessions on mount
+  // Load sessions + agents on mount
   useEffect(() => {
     getChatHistory().then(s => {
       if (Array.isArray(s)) setSessions(s);
     }).catch(() => {});
+    getAgents().then(a => setAgents(a || [])).catch(() => {});
   }, []);
 
   // Scroll to bottom
@@ -81,7 +86,7 @@ export default function Chat() {
     setAgentStatus('thinking');
 
     try {
-      const result = await sendChat(msg, sessionId, forceProvider, whiteCardMode);
+      const result = await sendChat(msg, sessionId, forceProvider, whiteCardMode, selectedAgent);
       
       if (!sessionId) {
         setSessionId(result.session_id);
@@ -95,7 +100,10 @@ export default function Chat() {
         model: result.model,
         routing: result.routing,
         fallback_chain: result.fallback_chain,
-        duration_ms: result.duration_ms
+        duration_ms: result.duration_ms,
+        agent_id: result.agent_id,
+        k1_prompt: result.k1_prompt,
+        category: result.category
       };
 
       setMessages(prev => [...prev, assistantMessage]);
@@ -197,7 +205,44 @@ export default function Chat() {
           )}
 
           {messages.map((msg, i) => (
-            <MessageBubble key={i} message={msg} showReasoning={showReasoning} />
+            <div key={i}>
+              <MessageBubble message={msg} showReasoning={showReasoning} />
+              {msg.role === 'assistant' && (
+                <div className={`flex items-center gap-1 mt-1 ${i > 0 ? 'ml-11' : 'ml-11'}`}>
+                  <Button
+                    variant="ghost" size="sm"
+                    className={`h-6 w-6 p-0 ${feedbackGiven[i] === 'positive' ? 'text-[hsl(var(--status-ok))]' : 'text-muted-foreground/50 hover:text-[hsl(var(--status-ok))]'}`}
+                    onClick={() => {
+                      if (sessionId) {
+                        submitFeedback(sessionId, i, 'positive', '').catch(() => {});
+                        setFeedbackGiven(prev => ({ ...prev, [i]: 'positive' }));
+                        toast.success('Thanks for the feedback!');
+                      }
+                    }}
+                    data-testid={`feedback-positive-${i}`}
+                  >
+                    <ThumbsUp className="w-3 h-3" />
+                  </Button>
+                  <Button
+                    variant="ghost" size="sm"
+                    className={`h-6 w-6 p-0 ${feedbackGiven[i] === 'negative' ? 'text-[hsl(var(--status-err))]' : 'text-muted-foreground/50 hover:text-[hsl(var(--status-err))]'}`}
+                    onClick={() => {
+                      if (sessionId) {
+                        submitFeedback(sessionId, i, 'negative', '').catch(() => {});
+                        setFeedbackGiven(prev => ({ ...prev, [i]: 'negative' }));
+                        toast.info('Feedback recorded, I\'ll improve!');
+                      }
+                    }}
+                    data-testid={`feedback-negative-${i}`}
+                  >
+                    <ThumbsDown className="w-3 h-3" />
+                  </Button>
+                  {msg.agent_id && msg.agent_id !== 'auto' && (
+                    <Badge variant="outline" className="text-[9px] font-mono-ombra ml-1">{msg.agent_id}</Badge>
+                  )}
+                </div>
+              )}
+            </div>
           ))}
 
           {loading && (
@@ -259,6 +304,41 @@ export default function Chat() {
                       >
                         <p.icon className="w-4 h-4" />
                         {p.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Agent selector */}
+              <div className="relative">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowAgentMenu(!showAgentMenu)}
+                  className="text-xs font-mono-ombra h-9"
+                  data-testid="chat-agent-select"
+                >
+                  <Bot className="w-3 h-3 mr-1" />
+                  {selectedAgent ? agents.find(a => a.agent_id === selectedAgent)?.name || 'Agent' : 'Auto'}
+                  <ChevronDown className="w-3 h-3 ml-1" />
+                </Button>
+                {showAgentMenu && (
+                  <div className="absolute bottom-full mb-1 right-0 bg-popover border border-border rounded-lg shadow-lg p-1 z-50 min-w-[160px]">
+                    <button
+                      onClick={() => { setSelectedAgent(null); setShowAgentMenu(false); }}
+                      className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-sm hover:bg-secondary/50 transition-colors ${!selectedAgent ? 'bg-secondary/70' : ''}`}
+                    >
+                      <Zap className="w-4 h-4" /> Auto
+                    </button>
+                    {agents.map(a => (
+                      <button
+                        key={a.agent_id}
+                        onClick={() => { setSelectedAgent(a.agent_id); setShowAgentMenu(false); }}
+                        className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-sm hover:bg-secondary/50 transition-colors ${selectedAgent === a.agent_id ? 'bg-secondary/70' : ''}`}
+                      >
+                        <div className="w-4 h-4 rounded" style={{ backgroundColor: a.color || '#888' }} />
+                        {a.name}
                       </button>
                     ))}
                   </div>

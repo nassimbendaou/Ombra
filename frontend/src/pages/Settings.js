@@ -9,9 +9,9 @@ import { Separator } from '../components/ui/separator';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
 import {
   Settings as SettingsIcon, Cpu, Cloud, Brain, Shield,
-  Save, RefreshCcw, Loader2, CheckCircle2, AlertCircle
+  Save, RefreshCcw, Loader2, CheckCircle2, AlertCircle, Send
 } from 'lucide-react';
-import { getSettings, updateSettings, getHealth } from '../lib/api';
+import { getSettings, updateSettings, getHealth, testTelegram, sendTelegramMessage, getLearningMetrics } from '../lib/api';
 import { toast } from 'sonner';
 
 export default function Settings() {
@@ -75,6 +75,7 @@ export default function Settings() {
           <TabsTrigger value="runtime"><Cpu className="w-4 h-4 mr-1" />Runtime</TabsTrigger>
           <TabsTrigger value="models"><Cloud className="w-4 h-4 mr-1" />Models</TabsTrigger>
           <TabsTrigger value="learning"><Brain className="w-4 h-4 mr-1" />Learning</TabsTrigger>
+          <TabsTrigger value="telegram"><Send className="w-4 h-4 mr-1" />Telegram</TabsTrigger>
         </TabsList>
 
         <TabsContent value="runtime" className="mt-4 space-y-4">
@@ -227,6 +228,53 @@ export default function Settings() {
                     onChange={e => setForm({ ...form, quiet_hours_end: e.target.value })}
                   />
                 </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="telegram" className="mt-4 space-y-4">
+          <Card className="bg-card/80 backdrop-blur border-border/60">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Send className="w-5 h-5 text-primary" />
+                Telegram Integration
+              </CardTitle>
+              <CardDescription>Connect Ombra to Telegram for notifications and quick commands</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="text-sm font-medium">Enable Telegram</label>
+                  <p className="text-xs text-muted-foreground">Send daily summaries and notifications</p>
+                </div>
+                <Switch
+                  checked={form.telegram_enabled ?? false}
+                  onCheckedChange={v => setForm({ ...form, telegram_enabled: v })}
+                  data-testid="settings-telegram-switch"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Telegram Chat ID</label>
+                <Input
+                  value={form.telegram_chat_id || ''}
+                  onChange={e => setForm({ ...form, telegram_chat_id: e.target.value })}
+                  placeholder="Your Telegram chat ID"
+                  data-testid="settings-telegram-chat-id"
+                />
+                <p className="text-[11px] text-muted-foreground">Send /start to @userinfobot on Telegram to get your chat ID</p>
+              </div>
+              <div className="flex items-center gap-3 p-3 bg-secondary/30 rounded-lg">
+                <div className={`w-3 h-3 rounded-full ${
+                  health?.telegram?.configured
+                    ? 'bg-[hsl(var(--status-ok))] shadow-[0_0_12px_hsl(var(--status-ok)/0.3)]'
+                    : 'bg-[hsl(var(--status-err))] shadow-[0_0_12px_hsl(var(--status-err)/0.3)]'
+                }`} />
+                <span className="text-sm">
+                  {health?.telegram?.configured
+                    ? `Bot connected: @${health.telegram.bot_info?.username || 'unknown'}`
+                    : 'Bot not configured'}
+                </span>
               </div>
             </CardContent>
           </Card>
