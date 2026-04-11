@@ -31,11 +31,35 @@ const typeConfig = {
     borderColor: 'border-l-[hsl(var(--activity-memory))]',
     badgeColor: 'bg-[hsl(var(--activity-memory)/0.15)] text-[hsl(var(--activity-memory))] border-[hsl(var(--activity-memory)/0.3)]',
   },
+  memory_decay: {
+    icon: Brain,
+    label: 'Memory Decay',
+    borderColor: 'border-l-[hsl(var(--activity-memory))]',
+    badgeColor: 'bg-[hsl(var(--activity-memory)/0.15)] text-[hsl(var(--activity-memory))] border-[hsl(var(--activity-memory)/0.3)]',
+  },
   autonomy: {
     icon: Sparkles,
     label: 'Autonomy',
     borderColor: 'border-l-[hsl(var(--activity-autonomy))]',
     badgeColor: 'bg-[hsl(var(--activity-autonomy)/0.15)] text-[hsl(var(--activity-autonomy))] border-[hsl(var(--activity-autonomy)/0.3)]',
+  },
+  agent_execution: {
+    icon: Sparkles,
+    label: 'Agent',
+    borderColor: 'border-l-[hsl(var(--activity-autonomy))]',
+    badgeColor: 'bg-[hsl(var(--activity-autonomy)/0.15)] text-[hsl(var(--activity-autonomy))] border-[hsl(var(--activity-autonomy)/0.3)]',
+  },
+  k1_learning: {
+    icon: Brain,
+    label: 'K1 Learning',
+    borderColor: 'border-l-[hsl(var(--activity-autonomy))]',
+    badgeColor: 'bg-[hsl(var(--activity-autonomy)/0.15)] text-[hsl(var(--activity-autonomy))] border-[hsl(var(--activity-autonomy)/0.3)]',
+  },
+  feedback: {
+    icon: Sparkles,
+    label: 'Feedback',
+    borderColor: 'border-l-[hsl(var(--status-info))]',
+    badgeColor: 'bg-[hsl(var(--status-info)/0.15)] text-[hsl(var(--status-info))] border-[hsl(var(--status-info)/0.3)]',
   },
   permission_change: {
     icon: Settings,

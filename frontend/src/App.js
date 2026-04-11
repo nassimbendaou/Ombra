@@ -7,6 +7,8 @@ import Permissions from './pages/Permissions';
 import ActivityTimeline from './pages/ActivityTimeline';
 import Settings from './pages/Settings';
 import Onboarding from './pages/Onboarding';
+import Agents from './pages/Agents';
+import ModelManager from './pages/ModelManager';
 import { Toaster } from './components/ui/sonner';
 import './App.css';
 
@@ -19,6 +21,8 @@ function App() {
           <Route element={<AppShell />}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/chat" element={<Chat />} />
+            <Route path="/agents" element={<Agents />} />
+            <Route path="/models" element={<ModelManager />} />
             <Route path="/permissions" element={<Permissions />} />
             <Route path="/activity" element={<ActivityTimeline />} />
             <Route path="/settings" element={<Settings />} />
