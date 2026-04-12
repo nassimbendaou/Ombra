@@ -1768,7 +1768,11 @@ async def run_task_now(task_id: str):
     if not task_queue:
         raise HTTPException(status_code=503, detail="Task queue not available")
     
-    task = tasks_col.find_one({"_id": task_id})
+    try:
+        task = tasks_col.find_one({"_id": ObjectId(task_id)})
+    except:
+        raise HTTPException(status_code=404, detail="Invalid task ID format")
+    
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     
