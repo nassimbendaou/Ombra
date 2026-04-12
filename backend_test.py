@@ -504,8 +504,267 @@ class OmbraAPITester:
             print(f"   Distillations: {response.get('distillations', 0)}")
         return success
 
+    # ============================================================
+    # PHASE 5 TESTS: SCHEDULING, QUEUE, CREATIVITY, ANALYTICS
+    # ============================================================
+    
+    def test_scheduler_status(self):
+        """Test scheduler status endpoint"""
+        success, response = self.run_test(
+            "Scheduler Status",
+            "GET",
+            "/scheduler/status",
+            200
+        )
+        if success:
+            print(f"   Running: {response.get('running', False)}")
+            print(f"   Paused: {response.get('paused', False)}")
+            print(f"   Scheduled tasks: {response.get('stats', {}).get('scheduled_tasks', 0)}")
+            print(f"   Executed runs: {response.get('stats', {}).get('executed_runs', 0)}")
+        return success, response
+
+    def test_scheduler_pause(self):
+        """Test scheduler pause endpoint"""
+        success, response = self.run_test(
+            "Scheduler Pause",
+            "POST",
+            "/scheduler/pause",
+            200
+        )
+        if success:
+            print(f"   Status: {response.get('status', 'unknown')}")
+        return success
+
+    def test_scheduler_resume(self):
+        """Test scheduler resume endpoint"""
+        success, response = self.run_test(
+            "Scheduler Resume",
+            "POST",
+            "/scheduler/resume",
+            200
+        )
+        if success:
+            print(f"   Status: {response.get('status', 'unknown')}")
+        return success
+
+    def test_queue_status(self):
+        """Test task queue status endpoint"""
+        success, response = self.run_test(
+            "Queue Status",
+            "GET",
+            "/queue/status",
+            200
+        )
+        if success:
+            print(f"   Running: {response.get('running', False)}")
+            print(f"   Queue size: {response.get('queue_size', 0)}")
+            print(f"   Active workers: {response.get('active_workers', 0)}")
+            print(f"   Max concurrency: {response.get('max_concurrency', 0)}")
+            print(f"   Tasks completed: {response.get('stats', {}).get('tasks_completed', 0)}")
+        return success, response
+
+    def test_queue_rebalance(self):
+        """Test task queue rebalance endpoint"""
+        success, response = self.run_test(
+            "Queue Rebalance",
+            "POST",
+            "/queue/rebalance",
+            200
+        )
+        if success:
+            print(f"   Status: {response.get('status', 'unknown')}")
+        return success
+
+    def test_creativity_status(self):
+        """Test creative exploration status endpoint"""
+        success, response = self.run_test(
+            "Creativity Status",
+            "GET",
+            "/creativity/status",
+            200
+        )
+        if success:
+            print(f"   Enabled: {response.get('enabled', False)}")
+            print(f"   Cadence ticks: {response.get('cadence_ticks', 0)}")
+            print(f"   Ideas generated: {response.get('stats', {}).get('ideas_generated', 0)}")
+            print(f"   Ideas accepted: {response.get('stats', {}).get('ideas_accepted', 0)}")
+        return success, response
+
+    def test_creativity_run(self):
+        """Test creative exploration run endpoint"""
+        success, response = self.run_test(
+            "Creativity Run",
+            "POST",
+            "/creativity/run",
+            200
+        )
+        if success:
+            print(f"   Action: {response.get('action', 'unknown')}")
+            if response.get('idea'):
+                print(f"   Idea generated: {response['idea'].get('content', '')[:100]}...")
+        return success
+
+    def test_creativity_settings(self):
+        """Test creative exploration settings endpoint"""
+        settings_data = {
+            "enabled": True,
+            "cadence_ticks": 5,
+            "draft_tasks_auto": False
+        }
+        success, response = self.run_test(
+            "Creativity Settings Update",
+            "PUT",
+            "/creativity/settings",
+            200,
+            data=settings_data
+        )
+        if success:
+            print(f"   Settings updated: {response.get('status', 'unknown')}")
+        return success
+
+    def test_analytics_overview(self):
+        """Test analytics overview endpoint"""
+        success, response = self.run_test(
+            "Analytics Overview",
+            "GET",
+            "/analytics/overview",
+            200
+        )
+        if success:
+            activities = response.get('activities', {})
+            tasks = response.get('tasks', {})
+            memory = response.get('memory', {})
+            print(f"   Total activities (24h): {activities.get('total', 0)}")
+            print(f"   Tasks completed (24h): {tasks.get('completed_24h', 0)}")
+            print(f"   Success rate: {tasks.get('success_rate', 0)}%")
+            print(f"   Total memories: {memory.get('total', 0)}")
+        return success
+
+    def test_analytics_autonomy(self):
+        """Test analytics autonomy endpoint"""
+        success, response = self.run_test(
+            "Analytics Autonomy",
+            "GET",
+            "/analytics/autonomy",
+            200
+        )
+        if success:
+            print(f"   Running: {response.get('running', False)}")
+            print(f"   Paused: {response.get('paused', False)}")
+            print(f"   Total ticks: {response.get('stats', {}).get('ticks', 0)}")
+            print(f"   Recent activities: {response.get('recent_activities', 0)}")
+        return success
+
+    def test_analytics_tasks(self):
+        """Test analytics tasks endpoint"""
+        success, response = self.run_test(
+            "Analytics Tasks",
+            "GET",
+            "/analytics/tasks",
+            200
+        )
+        if success:
+            status_breakdown = response.get('status_breakdown', {})
+            duration_stats = response.get('duration_stats', {})
+            print(f"   Status breakdown: {status_breakdown}")
+            print(f"   Avg duration: {duration_stats.get('avg_duration_ms', 0)}ms")
+            print(f"   Scheduled tasks: {response.get('scheduled_tasks', 0)}")
+        return success
+
+    def test_analytics_tools(self):
+        """Test analytics tools endpoint"""
+        success, response = self.run_test(
+            "Analytics Tools",
+            "GET",
+            "/analytics/tools",
+            200
+        )
+        if success:
+            tool_usage = response.get('tool_usage', [])
+            print(f"   Tool usage entries: {len(tool_usage)}")
+            print(f"   Blocked commands (24h): {response.get('blocked_commands_24h', 0)}")
+        return success
+
+    def test_analytics_memory(self):
+        """Test analytics memory endpoint"""
+        success, response = self.run_test(
+            "Analytics Memory",
+            "GET",
+            "/analytics/memory",
+            200
+        )
+        if success:
+            print(f"   Total memories: {response.get('total_memories', 0)}")
+            print(f"   Pinned memories: {response.get('pinned_memories', 0)}")
+            print(f"   Decayed (24h): {response.get('decayed_24h', 0)}")
+            type_breakdown = response.get('type_breakdown', [])
+            print(f"   Memory types: {len(type_breakdown)}")
+        return success
+
+    def test_analytics_providers(self):
+        """Test analytics providers endpoint"""
+        success, response = self.run_test(
+            "Analytics Providers",
+            "GET",
+            "/analytics/providers",
+            200
+        )
+        if success:
+            providers = response.get('providers', [])
+            print(f"   Provider entries: {len(providers)}")
+            if providers:
+                print(f"   Sample provider: {providers[0].get('_id', 'unknown')}")
+        return success
+
+    def test_task_schedule_update(self, task_id):
+        """Test task schedule update endpoint"""
+        if not task_id:
+            print("   Skipping task schedule test - no task ID available")
+            return False
+            
+        schedule_data = {
+            "mode": "interval",
+            "interval_seconds": 3600,
+            "schedule_enabled": True,
+            "respect_quiet_hours": True
+        }
+        success, response = self.run_test(
+            "Task Schedule Update",
+            "PUT",
+            f"/tasks/{task_id}/schedule",
+            200,
+            data=schedule_data
+        )
+        if success:
+            print(f"   Schedule updated for task: {task_id}")
+            if response:
+                print(f"   Next run at: {response.get('next_run_at', 'Not set')}")
+            else:
+                print("   Schedule update successful (no response data)")
+        return success
+
+    def test_task_run_now(self, task_id):
+        """Test task run now endpoint"""
+        if not task_id:
+            print("   Skipping task run now test - no task ID available")
+            return False
+            
+        success, response = self.run_test(
+            "Task Run Now",
+            "POST",
+            f"/tasks/{task_id}/run-now",
+            200
+        )
+        if success:
+            print(f"   Task queued for immediate execution: {task_id}")
+            if response:
+                print(f"   Status: {response.get('status', 'unknown')}")
+            else:
+                print("   Task queued successfully (no response data)")
+        return success
+
 def main():
-    print("🚀 Starting Ombra Phase 4 API Testing...")
+    print("🚀 Starting Ombra Phase 5 API Testing...")
     print("=" * 60)
     
     tester = OmbraAPITester()
@@ -552,7 +811,7 @@ def main():
     tester.test_white_card_suggestions()
     
     # ============================================================
-    # PHASE 4 TESTS
+    # PHASE 4 TESTS (Regression Testing)
     # ============================================================
     
     # Test Autonomy Daemon
@@ -594,12 +853,59 @@ def main():
     tester.test_k1_distillations()
     tester.test_learning_metrics()
     
+    # ============================================================
+    # PHASE 5 TESTS (New Features)
+    # ============================================================
+    
+    # Test Task Scheduler
+    print("\n⏰ PHASE 5: TASK SCHEDULER TESTS")
+    print("-" * 30)
+    scheduler_success, scheduler_status = tester.test_scheduler_status()
+    if scheduler_success:
+        # Test pause/resume cycle
+        tester.test_scheduler_pause()
+        time.sleep(1)
+        tester.test_scheduler_resume()
+    
+    # Test Task Queue
+    print("\n🔄 PHASE 5: TASK QUEUE TESTS")
+    print("-" * 30)
+    queue_success, queue_status = tester.test_queue_status()
+    if queue_success:
+        tester.test_queue_rebalance()
+    
+    # Test Creative Exploration
+    print("\n🎨 PHASE 5: CREATIVE EXPLORATION TESTS")
+    print("-" * 30)
+    creativity_success, creativity_status = tester.test_creativity_status()
+    tester.test_creativity_settings()
+    tester.test_creativity_run()
+    
+    # Test Analytics Endpoints
+    print("\n📊 PHASE 5: ANALYTICS ENDPOINTS TESTS")
+    print("-" * 30)
+    tester.test_analytics_overview()
+    tester.test_analytics_autonomy()
+    tester.test_analytics_tasks()
+    tester.test_analytics_tools()
+    tester.test_analytics_memory()
+    tester.test_analytics_providers()
+    
+    # Test Task Scheduling Features
+    print("\n📅 PHASE 5: TASK SCHEDULING FEATURES TESTS")
+    print("-" * 30)
+    if task_success and task_id:
+        tester.test_task_schedule_update(task_id)
+        tester.test_task_run_now(task_id)
+    else:
+        print("   Skipping task scheduling tests - no task available")
+    
     # Print final results
     print("\n" + "=" * 60)
     print(f"📊 FINAL RESULTS: {tester.tests_passed}/{tester.tests_run} tests passed")
     
     if tester.tests_passed == tester.tests_run:
-        print("🎉 All tests passed! Phase 4 backend is working correctly.")
+        print("🎉 All tests passed! Phase 5 backend is working correctly.")
         return 0
     else:
         print(f"⚠️  {tester.tests_run - tester.tests_passed} tests failed. Check the logs above.")

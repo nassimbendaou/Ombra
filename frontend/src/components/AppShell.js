@@ -3,7 +3,7 @@ import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, MessageSquare, Shield, Activity, Settings,
-  ChevronLeft, ChevronRight, Zap, Menu, X, Bot, Cpu, Brain
+  ChevronLeft, ChevronRight, Zap, Menu, X, Bot, Cpu, Brain, BarChart3
 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Separator } from './ui/separator';
@@ -16,6 +16,7 @@ const navItems = [
   { path: '/agents', icon: Bot, label: 'Agents' },
   { path: '/models', icon: Cpu, label: 'Models' },
   { path: '/memories', icon: Brain, label: 'Memories' },
+  { path: '/analytics', icon: BarChart3, label: 'Analytics' },
   { path: '/permissions', icon: Shield, label: 'Permissions' },
   { path: '/activity', icon: Activity, label: 'Activity' },
   { path: '/settings', icon: Settings, label: 'Settings' },
