@@ -1,39 +1,7 @@
 [
   {
-    "content": "Design and implement task scheduling schema (simple + cron) in MongoDB",
-    "status": "completed"
-  },
-  {
-    "content": "Build scheduler worker service with queue management",
-    "status": "completed"
-  },
-  {
-    "content": "Add scheduling API endpoints (PUT /api/tasks/{id}/schedule, POST /api/tasks/{id}/run-now, etc.)",
-    "status": "completed"
-  },
-  {
-    "content": "Implement execution queue + multi-task parallel worker pool with intelligent scaling",
-    "status": "completed"
-  },
-  {
-    "content": "Add queue management API endpoints (GET /api/queue/status, POST /api/queue/rebalance)",
-    "status": "completed"
-  },
-  {
-    "content": "Build creative exploration engine (internal context-based idea generation)",
-    "status": "completed"
-  },
-  {
-    "content": "Add creativity API endpoints (GET /api/creativity/status, POST /api/creativity/run)",
-    "status": "completed"
-  },
-  {
-    "content": "Implement Analytics backend aggregation endpoints (overview, autonomy, tasks, tools, memory, providers)",
-    "status": "completed"
-  },
-  {
     "content": "Build dedicated Analytics page with charts and auto-refresh",
-    "status": "in_progress"
+    "status": "completed"
   },
   {
     "content": "Add analytics overview widgets to main Dashboard",
@@ -45,7 +13,7 @@
   },
   {
     "content": "Test Phase 5 features comprehensively via testing_agent_v3",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "content": "Fix any bugs found during testing",
