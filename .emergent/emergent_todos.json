@@ -1,9 +1,5 @@
 [
   {
-    "content": "Build dedicated Analytics page with charts and auto-refresh",
-    "status": "completed"
-  },
-  {
     "content": "Add analytics overview widgets to main Dashboard",
     "status": "pending"
   },
@@ -12,15 +8,7 @@
     "status": "pending"
   },
   {
-    "content": "Test Phase 5 features comprehensively via testing_agent_v3",
-    "status": "in_progress"
-  },
-  {
-    "content": "Fix any bugs found during testing",
-    "status": "pending"
-  },
-  {
     "content": "Mark Phase 5 as COMPLETED in plan.md",
-    "status": "pending"
+    "status": "completed"
   }
 ]
