@@ -6,9 +6,5 @@
   {
     "content": "Build Task Scheduling UI (schedule editor, interval/cron tabs, next-run preview)",
     "status": "pending"
-  },
-  {
-    "content": "Mark Phase 5 as COMPLETED in plan.md",
-    "status": "completed"
   }
 ]
