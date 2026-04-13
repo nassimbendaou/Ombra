@@ -130,6 +130,19 @@ export const sendTelegramMessage = (chatId, message) =>
   fetchAPI('/telegram/send', { method: 'POST', body: JSON.stringify({ chat_id: chatId, message }) });
 export const sendTelegramSummary = () => fetchAPI('/telegram/send-summary', { method: 'POST' });
 
+// Email
+export const testEmail = () => fetchAPI('/email/test', { method: 'POST' });
+export const getEmailProviderStatus = () => fetchAPI('/email/provider/status');
+export const connectEmailProvider = (provider, email, appPassword) =>
+  fetchAPI('/email/provider/connect', { method: 'POST', body: JSON.stringify({ provider, email, app_password: appPassword }) });
+export const disconnectEmailProvider = () => fetchAPI('/email/provider/disconnect', { method: 'POST' });
+
+// Email Drafts
+export const getEmailDrafts = () => fetchAPI('/email/drafts');
+export const getEmailDraftsCount = () => fetchAPI('/email/drafts/count');
+export const sendEmailDraft = (draftId) => fetchAPI(`/email/drafts/${draftId}/send`, { method: 'POST' });
+export const deleteEmailDraft = (draftId) => fetchAPI(`/email/drafts/${draftId}`, { method: 'DELETE' });
+
 // Intuition
 export const getIntentPrediction = () => fetchAPI('/intuition/prediction');
 export const getIntuitionSuggestions = () => fetchAPI('/intuition/suggestions');
@@ -186,3 +199,127 @@ export const getAnalyticsTasks = () => fetchAPI('/analytics/tasks');
 export const getAnalyticsTools = () => fetchAPI('/analytics/tools');
 export const getAnalyticsMemory = () => fetchAPI('/analytics/memory');
 export const getAnalyticsProviders = () => fetchAPI('/analytics/providers');
+
+// Preview
+export const getPreviewUrl = (filePath) =>
+  `${API_BASE}/preview?path=${encodeURIComponent(filePath)}`;
+export const getPreviewDir = (path = '/tmp') =>
+  fetchAPI(`/preview/dir?path=${encodeURIComponent(path)}`);
+
+// Streaming Chat (SSE)
+export const streamChat = (message, sessionId, forceProvider, whiteCardMode, agentId, onToken, onDone, onError, enableTools, onToolEvent) => {
+  const url = `${API_BASE}/chat/stream`;
+  let aborted = false;
+  const controller = new AbortController();
+
+  const run = async () => {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, session_id: sessionId, force_provider: forceProvider, white_card_mode: whiteCardMode, agent_id: agentId, enable_tools: enableTools }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const txt = await response.text();
+        onError && onError(new Error(`API Error ${response.status}: ${txt}`));
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done || aborted) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // keep incomplete last line
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const raw = line.slice(6).trim();
+          if (!raw) continue;
+          try {
+            const data = JSON.parse(raw);
+            if (data.type === 'token') {
+              onToken && onToken(data.text || data.token || '');
+            } else if (data.type === 'tool_start' || data.type === 'tool_result') {
+              onToolEvent && onToolEvent(data);
+            } else if (data.type === 'done') {
+              onDone && onDone(data);
+            } else if (data.type === 'error') {
+              onError && onError(new Error(data.error || data.message || 'Streaming error'));
+            }
+          } catch (e) {
+            // skip malformed JSON
+          }
+        }
+      }
+    } catch (e) {
+      if (!aborted) onError && onError(e);
+    }
+  };
+
+  run();
+
+  return {
+    abort: () => {
+      aborted = true;
+      controller.abort();
+    }
+  };
+};
+
+// WebSocket connection for typing indicators and live events
+export const connectWebSocket = (onMessage) => {
+  const wsBase = (process.env.REACT_APP_BACKEND_URL || window.location.origin)
+    .replace('https://', 'wss://')
+    .replace('http://', 'ws://');
+  const ws = new WebSocket(`${wsBase}/ws`);
+
+  // Keepalive ping every 25s
+  let pingInterval = null;
+  ws.onopen = () => {
+    pingInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
+    }, 25000);
+  };
+
+  ws.onmessage = (evt) => {
+    try {
+      const data = JSON.parse(evt.data);
+      onMessage && onMessage(data);
+    } catch (e) {}
+  };
+
+  ws.onerror = () => {};
+  ws.onclose = () => {
+    if (pingInterval) clearInterval(pingInterval);
+  };
+
+  return {
+    close: () => { if (pingInterval) clearInterval(pingInterval); ws.close(); }
+  };
+};
+
+// Webhooks
+export const getWebhooks = () => fetchAPI('/webhooks');
+export const createWebhook = (name, description, agentId) =>
+  fetchAPI('/webhooks', { method: 'POST', body: JSON.stringify({ name, description, agent_id: agentId }) });
+export const deleteWebhook = (hookId) =>
+  fetchAPI(`/webhooks/${hookId}`, { method: 'DELETE' });
+export const triggerWebhook = (hookId, payload = {}) =>
+  fetchAPI(`/webhooks/${hookId}/trigger`, { method: 'POST', body: JSON.stringify(payload) });
+
+// Skills
+export const getSkills = () => fetchAPI('/skills');
+export const activateSkill = (skillId) => fetchAPI(`/skills/${skillId}/activate`, { method: 'POST' });
+export const deactivateSkill = (skillId) => fetchAPI(`/skills/${skillId}/deactivate`, { method: 'POST' });
+export const createSkill = (id, content) =>
+  fetchAPI('/skills', { method: 'POST', body: JSON.stringify({ id, content }) });
+export const deleteSkill = (skillId) =>
+  fetchAPI(`/skills/${skillId}`, { method: 'DELETE' });

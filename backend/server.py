@@ -8,15 +8,33 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from pymongo import MongoClient, DESCENDING, TEXT
 from bson import ObjectId
 import httpx
+try:
+    from sse_starlette.sse import EventSourceResponse
+    SSE_AVAILABLE = True
+except ImportError:
+    SSE_AVAILABLE = False
 
 load_dotenv()
+
+# Token cost table (per 1M tokens)
+MODEL_COSTS = {
+    "gpt-4o": {"input": 2.50, "output": 10.00},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    "gpt-4.1": {"input": 2.00, "output": 8.00},
+    "claude-3-5-sonnet": {"input": 3.00, "output": 15.00},
+    "claude-sonnet-4-5": {"input": 3.00, "output": 15.00},
+    "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
+    "tinyllama": {"input": 0, "output": 0},
+    "mistral": {"input": 0, "output": 0},
+}
 
 # Module imports
 from agents import BUILTIN_AGENTS, classify_task_for_agent
@@ -33,12 +51,22 @@ from telegram_bot import (
     format_daily_summary, format_task_list
 )
 from filesystem_tool import read_file, write_file, list_directory
+try:
+    from agent_loop import run_agent_loop, stream_agent_loop
+    AGENT_LOOP_AVAILABLE = True
+except ImportError:
+    AGENT_LOOP_AVAILABLE = False
 from tool_safety import redact_secrets, check_command_policy, create_safe_env, DEFAULT_DENYLIST, DEFAULT_ALLOWLIST
 from autonomy_daemon import AutonomyDaemon
 from telegram_router import TelegramRouter
 from scheduler import TaskScheduler
 from task_queue import TaskQueue
 from creative_exploration import CreativeExplorer
+from workspace_loader import (
+    build_system_prompt, get_active_skill_ids,
+    detect_skills_for_message, list_skills, load_skill,
+    install_skill, delete_skill, load_soul
+)
 
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
 DB_NAME = os.environ.get("DB_NAME", "ombra_db")
@@ -46,6 +74,13 @@ EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+
+# OAuth email configuration (no longer needed — using app passwords)
+# GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+# GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+# MICROSOFT_CLIENT_ID = os.environ.get("MICROSOFT_CLIENT_ID", "")
+# MICROSOFT_CLIENT_SECRET = os.environ.get("MICROSOFT_CLIENT_SECRET", "")
+# OAUTH_REDIRECT_BASE = os.environ.get("OAUTH_REDIRECT_BASE", "")
 
 # MongoDB
 client = MongoClient(MONGO_URL)
@@ -64,6 +99,8 @@ feedback_col = db["feedback"]
 learning_col = db["learning_changes"]
 distillation_col = db["k1_distillations"]
 tool_policies_col = db["tool_policies"]
+webhooks_col = db["webhooks"]
+email_drafts_col = db["email_drafts"]
 
 # Daemons (initialized in lifespan)
 autonomy_daemon = None
@@ -71,6 +108,93 @@ telegram_router = None
 task_scheduler = None
 task_queue = None
 creative_explorer = None
+
+
+# ============================================================
+# WEBSOCKET CONNECTION MANAGER
+# ============================================================
+class ConnectionManager:
+    def __init__(self):
+        self.active: list[WebSocket] = []
+
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        self.active.append(ws)
+
+    def disconnect(self, ws: WebSocket):
+        self.active.discard(ws) if hasattr(self.active, 'discard') else None
+        if ws in self.active:
+            self.active.remove(ws)
+
+    async def broadcast(self, data: dict):
+        dead = []
+        for ws in self.active:
+            try:
+                await ws.send_json(data)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+    async def send_typing(self, session_id: str, is_typing: bool):
+        await self.broadcast({"type": "typing", "session_id": session_id, "typing": is_typing})
+
+    async def send_event(self, event_type: str, data: dict):
+        await self.broadcast({"type": event_type, **data})
+
+
+ws_manager = ConnectionManager()
+
+
+# ============================================================
+# TOKEN + USAGE UTILITIES
+# ============================================================
+def estimate_tokens(text: str) -> int:
+    """Estimate token count using tiktoken if available, else rough estimate."""
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except Exception:
+        return max(1, len(text) // 4)
+
+
+def calculate_cost(input_tokens: int, output_tokens: int, model: str) -> float:
+    """Calculate cost in USD for a given model and token counts."""
+    model_key = next((k for k in MODEL_COSTS if k in (model or "").lower()), None)
+    if not model_key:
+        return 0.0
+    rates = MODEL_COSTS[model_key]
+    return (input_tokens * rates["input"] + output_tokens * rates["output"]) / 1_000_000
+
+
+def prune_conversation(turns: list, max_tokens: int = 3000) -> list:
+    """
+    Trim oldest turns until total estimated tokens is under max_tokens.
+    Always keeps the first turn (context) and last 2 turns.
+    """
+    if not turns:
+        return turns
+    total = sum(estimate_tokens(t.get("content", "")) for t in turns)
+    if total <= max_tokens:
+        return turns
+    # Keep compacted system turns, trim from index 1
+    result = [t for t in turns if t.get("compacted")]
+    normal = [t for t in turns if not t.get("compacted")]
+    while normal and sum(estimate_tokens(t.get("content", "")) for t in result + normal) > max_tokens:
+        if len(normal) > 4:
+            normal.pop(0)  # drop oldest normal turn
+        else:
+            break
+    pruned = result + normal
+    if len(pruned) < len(turns):
+        db["activity_log"].insert_one({
+            "type": "session_pruned",
+            "details": {"turns_removed": len(turns) - len(pruned), "original": len(turns)},
+            "duration_ms": 0,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+    return pruned
 
 # Create indexes
 try:
@@ -179,13 +303,19 @@ async def check_ollama_health():
             resp = await c.get(f"{OLLAMA_URL}/api/tags")
             if resp.status_code == 200:
                 models = resp.json().get("models", [])
-                return {"available": True, "models": [m["name"] for m in models]}
+                # Sort by size ascending so smallest/fastest model is used first
+                models_sorted = sorted(models, key=lambda m: m.get("size", 0))
+                return {"available": True, "models": [m["name"] for m in models_sorted]}
     except Exception:
         pass
     return {"available": False, "models": []}
 
 
 async def call_ollama(prompt: str, system_message: str = "", model: str = "tinyllama"):
+    # Resolve best available model if not specified
+    if not model:
+        status = await check_ollama_health()
+        model = status["models"][0] if status.get("models") else "tinyllama"
     full_prompt = f"{system_message}\n\nUser: {prompt}\nAssistant:" if system_message else prompt
     async with httpx.AsyncClient(timeout=120) as c:
         payload = {
@@ -200,30 +330,78 @@ async def call_ollama(prompt: str, system_message: str = "", model: str = "tinyl
 
 
 async def call_api_provider(prompt: str, system_message: str, provider: str, model: str):
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
-
+    """Call external API provider with exponential backoff retry (max 3 attempts)."""
     provider_models = {
         "openai": "gpt-4o",
-        "anthropic": "claude-sonnet-4-5-20250929",
-        "gemini": "gemini-2.5-flash"
+        "anthropic": "claude-3-5-sonnet-20241022",
+        "gemini": "gemini-2.0-flash"
     }
-
     actual_model = model or provider_models.get(provider, "gpt-4o")
-    actual_provider = provider or "openai"
 
-    chat = LlmChat(
-        api_key=EMERGENT_KEY,
-        session_id=f"ombra-{uuid.uuid4().hex[:8]}",
-        system_message=system_message or "You are Ombra, an intelligent autonomous AI assistant."
-    ).with_model(actual_provider, actual_model)
+    max_retries = 3
+    base_delay = 1.0
 
-    msg = UserMessage(text=prompt)
-    response = await chat.send_message(msg)
-    return str(response)
+    for attempt in range(max_retries):
+        try:
+            if provider == "openai" or not provider:
+                async with httpx.AsyncClient(timeout=60) as c:
+                    resp = await c.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {EMERGENT_KEY}", "Content-Type": "application/json"},
+                        json={
+                            "model": actual_model,
+                            "messages": [
+                                {"role": "system", "content": system_message or "You are Ombra, an intelligent autonomous AI assistant."},
+                                {"role": "user", "content": prompt}
+                            ],
+                            "max_tokens": 1000,
+                            "temperature": 0.7
+                        }
+                    )
+                    data = resp.json()
+                    if "error" in data:
+                        err_msg = data['error'].get('message', str(data['error']))
+                        # Don't retry auth errors
+                        if "invalid_api_key" in err_msg.lower() or "unauthorized" in err_msg.lower():
+                            raise Exception(f"OpenAI error: {err_msg}")
+                        raise Exception(f"OpenAI error: {err_msg}")
+                    return data["choices"][0]["message"]["content"]
+
+            elif provider == "anthropic":
+                async with httpx.AsyncClient(timeout=60) as c:
+                    resp = await c.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "x-api-key": EMERGENT_KEY,
+                            "anthropic-version": "2023-06-01",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": actual_model,
+                            "max_tokens": 1000,
+                            "system": system_message or "You are Ombra, an intelligent autonomous AI assistant.",
+                            "messages": [{"role": "user", "content": prompt}]
+                        }
+                    )
+                    data = resp.json()
+                    if "error" in data:
+                        raise Exception(f"Anthropic error: {data['error'].get('message', str(data['error']))}")
+                    return data["content"][0]["text"]
+
+            else:
+                raise Exception(f"Unsupported provider: {provider}")
+
+        except Exception as e:
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)  # 1s, 2s, 4s
+                await asyncio.sleep(delay)
+                continue
+            raise
 
 
 async def route_and_respond(message: str, system_message: str = "", conversation_context: str = "",
-                            force_provider: str = None, agent_id: str = None):
+                            force_provider: str = None, agent_id: str = None,
+                            active_skills: list = None, thinking_level: str = "low"):
     start_time = time.time()
     routing = score_complexity(message)
 
@@ -245,8 +423,24 @@ async def route_and_respond(message: str, system_message: str = "", conversation
             if agent.get("provider_preference"):
                 force_provider = agent["provider_preference"]
 
+    # Auto-detect relevant skills from the message
+    skill_ids = active_skills or detect_skills_for_message(message)
+    # Also include any globally-activated skills
+    global_skills = get_active_skill_ids(db)
+    all_skills = list(dict.fromkeys(global_skills + skill_ids))  # deduplicate, preserve order
+
+    # Inject SOUL.md + active skills into system prompt (OpenClaw-style workspace injection)
+    sys_msg = build_system_prompt(sys_msg, active_skill_ids=all_skills)
+
     if conversation_context:
         sys_msg += f"\n\nRecent conversation context:\n{conversation_context}"
+
+    # Apply thinking level (affects temperature + instruction style)
+    if thinking_level == "high":
+        sys_msg += "\n\nThink carefully and thoroughly before responding. Show your reasoning step by step."
+    elif thinking_level == "medium":
+        sys_msg += "\n\nThink through this before responding."
+    # "low" and "off" use default behavior
 
     # Retrieve relevant memories with scoring
     try:
@@ -315,6 +509,11 @@ async def route_and_respond(message: str, system_message: str = "", conversation
 
     duration_ms = int((time.time() - start_time) * 1000)
 
+    # Usage tracking
+    input_tokens = estimate_tokens(sys_msg + message)
+    output_tokens = estimate_tokens(response_text) if response_text else 0
+    cost_usd = calculate_cost(input_tokens, output_tokens, model_used or "")
+
     # K1 Teacher-Student: If cloud was used, distill the response
     if used_cloud and response_text:
         task_sig = categorize_message(message) + ":" + message[:50]
@@ -345,7 +544,13 @@ async def route_and_respond(message: str, system_message: str = "", conversation
         "duration_ms": duration_ms,
         "k1_prompt_used": best_prompt.get("prompt_id", "default"),
         "category": category,
-        "agent_id": agent_id
+        "agent_id": agent_id,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "cost_usd": round(cost_usd, 6),
+        }
     }
 
     log_activity("model_call", {
@@ -363,46 +568,184 @@ async def route_and_respond(message: str, system_message: str = "", conversation
     return result
 
 
+async def stream_route_and_respond(message: str, sys_msg: str, model_used: str,
+                                    provider_used: str, ollama_available: bool):
+    """
+    Generator that streams tokens. Tries Ollama stream first, then OpenAI stream.
+    Yields JSON-lines: {"token": "..."} or {"done": true, "usage": {...}}
+    """
+    import json as _json
+    start = time.time()
+    full_response = ""
+
+    if ollama_available and (not provider_used or provider_used == "ollama"):
+        try:
+            full_prompt = f"{sys_msg}\n\nUser: {message}\nAssistant:" if sys_msg else message
+            async with httpx.AsyncClient(timeout=120) as c:
+                async with c.stream("POST", f"{OLLAMA_URL}/api/generate", json={
+                    "model": model_used or "tinyllama",
+                    "prompt": full_prompt,
+                    "stream": True,
+                    "options": {"num_predict": 500, "temperature": 0.7}
+                }) as resp:
+                    async for line in resp.aiter_lines():
+                        if not line:
+                            continue
+                        try:
+                            chunk = _json.loads(line)
+                            token = chunk.get("response", "")
+                            if token:
+                                full_response += token
+                                yield f"data: {_json.dumps({'token': token})}\n\n"
+                            if chunk.get("done"):
+                                break
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+    elif EMERGENT_KEY and provider_used in (None, "openai", "api"):
+        try:
+            async with httpx.AsyncClient(timeout=60) as c:
+                async with c.stream("POST",
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {EMERGENT_KEY}", "Content-Type": "application/json"},
+                    json={
+                        "model": "gpt-4o-mini",
+                        "messages": [
+                            {"role": "system", "content": sys_msg or "You are Ombra."},
+                            {"role": "user", "content": message}
+                        ],
+                        "max_tokens": 800,
+                        "temperature": 0.7,
+                        "stream": True
+                    }
+                ) as resp:
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        raw = line[6:]
+                        if raw == "[DONE]":
+                            break
+                        try:
+                            chunk = _json.loads(raw)
+                            token = chunk["choices"][0]["delta"].get("content", "")
+                            if token:
+                                full_response += token
+                                yield f"data: {_json.dumps({'token': token})}\n\n"
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+    if not full_response:
+        full_response = "I couldn't generate a response."
+        yield f"data: {_json.dumps({'token': full_response})}\n\n"
+
+    input_tokens = estimate_tokens(sys_msg + message)
+    output_tokens = estimate_tokens(full_response)
+    cost = calculate_cost(input_tokens, output_tokens, model_used or "")
+    duration_ms = int((time.time() - start) * 1000)
+
+    yield f"data: {_json.dumps({'done': True, 'full_response': full_response, 'duration_ms': duration_ms, 'usage': {'input_tokens': input_tokens, 'output_tokens': output_tokens, 'total_tokens': input_tokens + output_tokens, 'cost_usd': round(cost, 6)}})}\n\n"
+
+
 # ============================================================
 # LEARNING SYSTEM (Enhanced)
 # ============================================================
 async def extract_and_learn(user_message: str, assistant_response: str, session_id: str):
     try:
         lower = user_message.lower()
+
+        # Pattern-based fast extraction for key personal facts
         pref_patterns = [
             ("i prefer", "preference"), ("i like", "preference"),
             ("i don't like", "preference"), ("i always", "habit"),
             ("i usually", "habit"), ("my name is", "identity"),
             ("i work", "context"), ("i'm working on", "context"),
+            ("i am ", "identity"), ("my project", "context"),
+            ("remember that", "explicit"), ("don't forget", "explicit"),
         ]
 
+        stored = False
         for pattern, mem_type in pref_patterns:
             if pattern in lower:
+                # Use Ollama to extract the actual fact, not raw message
+                try:
+                    fact = await call_ollama(
+                        f"Extract the key fact or preference from this message in one short sentence: \"{user_message[:200]}\"",
+                        system="Extract only the factual information. Be concise. No explanation.",
+                        model=None  # uses first available
+                    )
+                    content = fact.strip() if fact.strip() else user_message[:200]
+                except Exception:
+                    content = user_message[:200]
+
                 memories_col.insert_one({
                     "type": mem_type,
-                    "content": user_message,
+                    "content": content,
                     "source": "conversation",
                     "session_id": session_id,
-                    "utility_score": 0.8,
+                    "utility_score": 0.85,
                     "access_count": 0,
                     "pinned": False,
-                    "decay_rate": 0.01,
+                    "decay_rate": 0.005,
                     "last_accessed_at": now_iso(),
                     "created_at": now_iso()
                 })
                 log_activity("memory_write", {
                     "memory_type": mem_type,
-                    "content_preview": user_message[:80],
+                    "content_preview": content[:80],
                     "source": "learning_extraction"
                 })
+                stored = True
                 break
 
+        # Every 5 turns, ask Ollama to extract any learnable facts from the exchange
         conversation = conversations_col.find_one({"session_id": session_id})
-        if conversation and len(conversation.get("turns", [])) % 10 == 0:
-            summary = f"Conversation topic: {user_message[:100]}"
+        turn_count = len(conversation.get("turns", [])) if conversation else 0
+        if turn_count > 0 and turn_count % 5 == 0:
+            try:
+                facts = await call_ollama(
+                    f"User said: \"{user_message[:300]}\"\nAssistant replied: \"{assistant_response[:300]}\"\n\nList any facts about the user worth remembering (max 2 bullet points, or say NONE):",
+                    system="You extract useful personal facts, preferences, or context about the user from conversations. Be concise.",
+                    model=None
+                )
+                if facts and "NONE" not in facts.upper() and len(facts.strip()) > 10:
+                    memories_col.insert_one({
+                        "type": "conversation_fact",
+                        "content": facts.strip()[:400],
+                        "source": "ai_extraction",
+                        "session_id": session_id,
+                        "utility_score": 0.7,
+                        "access_count": 0,
+                        "pinned": False,
+                        "decay_rate": 0.01,
+                        "last_accessed_at": now_iso(),
+                        "created_at": now_iso()
+                    })
+                    log_activity("memory_write", {
+                        "memory_type": "conversation_fact",
+                        "content_preview": facts[:80],
+                        "source": "ai_extraction"
+                    })
+            except Exception:
+                pass
+
+        # Summary every 10 turns
+        if turn_count > 0 and turn_count % 10 == 0:
+            try:
+                summary = await call_ollama(
+                    f"Summarize the main topic and outcome of this conversation turn in one sentence. User: \"{user_message[:200]}\"",
+                    system="Write a factual one-sentence summary.",
+                    model=None
+                )
+                content = summary.strip() if summary.strip() else f"Conversation about: {user_message[:100]}"
+            except Exception:
+                content = f"Conversation about: {user_message[:100]}"
             memories_col.insert_one({
                 "type": "conversation_summary",
-                "content": summary,
+                "content": content,
                 "source": "auto_summary",
                 "session_id": session_id,
                 "utility_score": 0.6,
@@ -422,8 +765,8 @@ async def extract_and_learn(user_message: str, assistant_response: str, session_
 def get_permissions():
     profile = profiles_col.find_one({"user_id": "default"})
     if not profile:
-        return {"terminal": False, "filesystem": False, "telegram": False}
-    return profile.get("permissions", {"terminal": False, "filesystem": False, "telegram": False})
+        return {"terminal": True, "filesystem": True, "telegram": True}
+    return profile.get("permissions", {"terminal": True, "filesystem": True, "telegram": True})
 
 
 def execute_terminal_command(command: str, timeout: int = 30):
@@ -482,6 +825,7 @@ class ChatRequest(BaseModel):
     force_provider: Optional[str] = None
     white_card_mode: bool = False
     agent_id: Optional[str] = None
+    enable_tools: Optional[bool] = None  # None = auto-detect from permissions
 
 class PermissionUpdate(BaseModel):
     terminal: Optional[bool] = None
@@ -500,6 +844,13 @@ class SettingsUpdate(BaseModel):
     telegram_chat_id: Optional[str] = None
     telegram_enabled: Optional[bool] = None
     hardware_ram: Optional[str] = None
+    morning_summary_hour_utc: Optional[int] = None
+    email_host: Optional[str] = None
+    email_port: Optional[int] = None
+    email_user: Optional[str] = None
+    email_pass: Optional[str] = None
+    email_from: Optional[str] = None
+    email_enabled: Optional[bool] = None
 
 class TaskCreate(BaseModel):
     title: str
@@ -619,9 +970,20 @@ async def lifespan(app: FastAPI):
     autonomy_daemon = AutonomyDaemon(db, OLLAMA_URL, EMERGENT_KEY)
     daemon_task = asyncio.create_task(autonomy_daemon.start())
 
-    # Start Telegram router if token configured
+    # Start Telegram router if token configured (full chat parity)
     if TELEGRAM_TOKEN:
-        telegram_router = TelegramRouter(db, route_and_respond, dashboard_summary)
+        telegram_router = TelegramRouter(
+            db,
+            route_and_respond_fn=route_and_respond,
+            get_summary_fn=dashboard_summary,
+            run_agent_loop_fn=run_agent_loop if AGENT_LOOP_AVAILABLE else None,
+            load_soul_fn=load_soul,
+            extract_and_learn_fn=extract_and_learn,
+            prune_conversation_fn=prune_conversation,
+            get_permissions_fn=get_permissions,
+            classify_agent_fn=classify_task_for_agent,
+            emergent_key=EMERGENT_KEY,
+        )
         tg_task = asyncio.create_task(telegram_router.poll_loop())
 
     # Start Task Queue with worker pool
@@ -688,11 +1050,378 @@ async def health():
 
 
 # ============================================================
-# CHAT (Enhanced with Agent + K1)
+# CHAT (Enhanced with Agent + K1 + Chat Commands)
 # ============================================================
+
+# Per-session state (thinking level, model override)
+_session_state: dict = {}
+
+
+async def handle_chat_command(cmd: str, session_id: str) -> dict | None:
+    """
+    Handle /slash commands like OpenClaw. Returns a command response dict or None if not a command.
+    """
+    cmd = cmd.strip()
+    if not cmd.startswith("/"):
+        return None
+
+    parts = cmd.split(None, 1)
+    command = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    state = _session_state.get(session_id, {})
+
+    if command == "/status":
+        ollama = await check_ollama_health()
+        mem_count = memories_col.count_documents({})
+        task_count = tasks_col.count_documents({"status": "pending"})
+        daemon_stats = autonomy_daemon.stats if autonomy_daemon else {}
+        thinking = state.get("thinking_level", "low")
+        model = state.get("model_override") or (ollama["models"][0] if ollama.get("models") else "none")
+        txt = (
+            f"**Ombra Status** — session `{session_id}`\n"
+            f"Model: {model} | Thinking: {thinking}\n"
+            f"Memories: {mem_count} | Pending tasks: {task_count}\n"
+            f"Daemon ticks: {daemon_stats.get('ticks', 0)} | "
+            f"Autonomous actions: {daemon_stats.get('autonomous_actions', 0)} | "
+            f"Internet learns: {daemon_stats.get('internet_learns', 0)}"
+        )
+        return {"response": txt, "command": "status", "session_id": session_id}
+
+    elif command == "/reset":
+        conversations_col.delete_one({"session_id": session_id})
+        _session_state.pop(session_id, None)
+        return {"response": "Session reset. Starting fresh.", "command": "reset", "session_id": session_id}
+
+    elif command == "/compact":
+        conversation = conversations_col.find_one({"session_id": session_id})
+        if not conversation or not conversation.get("turns"):
+            return {"response": "Nothing to compact.", "command": "compact", "session_id": session_id}
+        turns = conversation["turns"]
+        full_text = "\n".join(f"{t['role']}: {t['content'][:300]}" for t in turns[-20:])
+        try:
+            summary = await call_ollama(
+                f"Summarize this conversation in 3-5 sentences:\n\n{full_text}",
+                system="Write a factual summary of the conversation. Include key decisions, topics, and outcomes.",
+                model=None
+            )
+        except Exception:
+            summary = f"Conversation about: {turns[0].get('content', '')[:100]}"
+        # Replace turns with a single summary turn
+        summary_turn = {
+            "role": "system",
+            "content": f"[Compacted] {summary}",
+            "timestamp": now_iso(),
+            "compacted": True
+        }
+        conversations_col.update_one(
+            {"session_id": session_id},
+            {"$set": {"turns": [summary_turn], "updated_at": now_iso()}}
+        )
+        return {"response": f"Conversation compacted.\n\nSummary: {summary}", "command": "compact", "session_id": session_id}
+
+    elif command == "/think":
+        level = arg.lower() if arg else "medium"
+        if level not in ("off", "low", "medium", "high"):
+            return {"response": "Usage: /think <off|low|medium|high>", "command": "think", "session_id": session_id}
+        _session_state.setdefault(session_id, {})["thinking_level"] = level
+        return {"response": f"Thinking level set to **{level}**.", "command": "think", "session_id": session_id}
+
+    elif command == "/model":
+        if not arg:
+            return {"response": "Usage: /model <model-name>  e.g. /model mistral", "command": "model", "session_id": session_id}
+        _session_state.setdefault(session_id, {})["model_override"] = arg
+        return {"response": f"Model override set to **{arg}** for this session.", "command": "model", "session_id": session_id}
+
+    elif command == "/skills":
+        skills = list_skills()
+        if not skills:
+            return {"response": "No skills installed.", "command": "skills", "session_id": session_id}
+        active = get_active_skill_ids(db)
+        lines = [f"{'✓' if s['id'] in active else '○'} **{s['name']}** (`{s['id']}`): {s['purpose']}" for s in skills]
+        return {"response": "**Available Skills:**\n\n" + "\n".join(lines), "command": "skills", "session_id": session_id}
+
+    elif command == "/memory":
+        mems = list(memories_col.find().sort("utility_score", -1).limit(10))
+        if not mems:
+            return {"response": "No memories stored yet.", "command": "memory", "session_id": session_id}
+        lines = [f"• [{m.get('type', '?')}] {m.get('content', '')[:120]}" for m in mems]
+        return {"response": "**Recent Memories:**\n\n" + "\n".join(lines), "command": "memory", "session_id": session_id}
+
+    elif command == "/verbose":
+        flag = arg.lower() if arg else "on"
+        _session_state.setdefault(session_id, {})["verbose"] = (flag == "on")
+        return {"response": f"Verbose routing info **{'on' if flag == 'on' else 'off'}**.", "command": "verbose", "session_id": session_id}
+
+    elif command == "/trace":
+        flag = arg.lower() if arg else "on"
+        _session_state.setdefault(session_id, {})["trace"] = (flag == "on")
+        return {"response": f"Fallback trace **{'on' if flag == 'on' else 'off'}**.", "command": "trace", "session_id": session_id}
+
+    elif command == "/usage":
+        mode = arg.lower() if arg else "tokens"
+        if mode not in ("off", "tokens", "full"):
+            return {"response": "Usage: /usage <off|tokens|full>", "command": "usage", "session_id": session_id}
+        _session_state.setdefault(session_id, {})["usage_display"] = mode
+        labels = {"off": "hidden", "tokens": "token count", "full": "tokens + cost"}
+        return {"response": f"Usage footer set to **{labels[mode]}**.", "command": "usage", "session_id": session_id}
+
+    elif command == "/cron":
+        sub = arg.split(None, 1)
+        sub_cmd = sub[0].lower() if sub else "list"
+        if sub_cmd == "list":
+            crons = list(tasks_col.find({"cron": True}).sort("created_at", -1).limit(10))
+            if not crons:
+                return {"response": "No cron jobs defined.", "command": "cron", "session_id": session_id}
+            lines = [f"• `{c.get('cron_schedule', '?')}` — {c.get('task', '')[:80]}" for c in crons]
+            return {"response": "**Cron Jobs:**\n\n" + "\n".join(lines), "command": "cron", "session_id": session_id}
+        elif sub_cmd == "add" and len(sub) > 1:
+            rest = sub[1].strip()
+            # Expect: "schedule" "task description"
+            import re as _re
+            m = _re.match(r'"([^"]+)"\s+"([^"]+)"', rest)
+            if not m:
+                return {"response": 'Usage: /cron add "schedule" "task description"\nExample: /cron add "every day at 9am" "summarize recent activity"', "command": "cron", "session_id": session_id}
+            sched, task_desc = m.group(1), m.group(2)
+            tasks_col.insert_one({
+                "task": task_desc,
+                "cron": True,
+                "cron_schedule": sched,
+                "status": "active",
+                "created_at": now_iso(),
+                "session_id": session_id
+            })
+            return {"response": f"Cron job added: `{sched}` → {task_desc}", "command": "cron", "session_id": session_id}
+        else:
+            return {"response": "Usage: /cron list | /cron add \"schedule\" \"task\"", "command": "cron", "session_id": session_id}
+
+    elif command == "/sessions":
+        sub = arg.split(None, 1)
+        sub_cmd = sub[0].lower() if sub else "list"
+        if sub_cmd == "list":
+            sessions = list(conversations_col.find({}, {"session_id": 1, "updated_at": 1}).sort("updated_at", -1).limit(10))
+            if not sessions:
+                return {"response": "No active sessions.", "command": "sessions", "session_id": session_id}
+            lines = [f"• `{s['session_id']}` — last active {s.get('updated_at', '?')[:19]}" for s in sessions]
+            return {"response": "**Active Sessions:**\n\n" + "\n".join(lines), "command": "sessions", "session_id": session_id}
+        elif sub_cmd == "send" and len(sub) > 1:
+            rest = sub[1].strip()
+            parts2 = rest.split(None, 1)
+            if len(parts2) < 2:
+                return {"response": "Usage: /sessions send <session_id> <message>", "command": "sessions", "session_id": session_id}
+            target_session, fwd_msg = parts2[0], parts2[1]
+            # Store outgoing messages for that session to pick up
+            conversations_col.update_one(
+                {"session_id": target_session},
+                {"$push": {"turns": {"role": "agent", "content": f"[From {session_id}]: {fwd_msg}", "timestamp": now_iso()}}},
+                upsert=True
+            )
+            return {"response": f"Message sent to session `{target_session}`.", "command": "sessions", "session_id": session_id}
+        else:
+            return {"response": "Usage: /sessions list | /sessions send <session_id> <message>", "command": "sessions", "session_id": session_id}
+
+    return None  # Not a recognized command
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    """WebSocket control plane — real-time typing indicators and daemon events."""
+    await ws_manager.connect(ws)
+    try:
+        while True:
+            data = await ws.receive_json()
+            if data.get("type") == "ping":
+                await ws.send_json({"type": "pong"})
+    except WebSocketDisconnect:
+        ws_manager.disconnect(ws)
+    except Exception:
+        ws_manager.disconnect(ws)
+
+
+@app.post("/api/chat/stream")
+async def chat_stream_endpoint(req: ChatRequest):
+    """SSE streaming endpoint — tokens arrive in real-time."""
+    import json as _json
+    session_id = req.session_id or f"session_{uuid.uuid4().hex[:12]}"
+
+    cmd_result = await handle_chat_command(req.message, session_id)
+    if cmd_result:
+        async def cmd_gen():
+            yield f"data: {_json.dumps({'type': 'start', 'session_id': session_id})}\n\n"
+            yield f"data: {_json.dumps({'type': 'token', 'text': cmd_result['response']})}\n\n"
+            yield f"data: {_json.dumps({'type': 'done', 'session_id': session_id, 'provider': 'system', 'model': 'command'})}\n\n"
+        return StreamingResponse(cmd_gen(), media_type="text/event-stream")
+
+    conversation = conversations_col.find_one({"session_id": session_id})
+    context = ""
+    if conversation:
+        recent_turns = [t for t in conversation.get("turns", [])[-6:] if not t.get("compacted")]
+        context = "\n".join([f"{t['role']}: {t['content'][:200]}" for t in recent_turns])
+
+    state = _session_state.get(session_id, {})
+    thinking_level = state.get("thinking_level", "low")
+
+    agent_id = req.agent_id
+    if not agent_id or agent_id == "auto":
+        agent_id = classify_task_for_agent(req.message)
+
+    category = categorize_message(req.message)
+    k1_prompts = list(prompts_col.find({"active": True})) or DEFAULT_PROMPTS
+    best_prompt = select_best_prompt(category, k1_prompts)
+    sys_msg = best_prompt.get("system_prompt", "You are Ombra.")
+    if agent_id:
+        agent = agents_col.find_one({"agent_id": agent_id})
+        if agent:
+            sys_msg = agent.get("system_prompt", sys_msg)
+    if req.white_card_mode:
+        sys_msg += "\n\nYou are in 'White Card' mode. Be proactive: suggest ideas, improvements, next steps."
+    skill_ids = detect_skills_for_message(req.message)
+    sys_msg = build_system_prompt(sys_msg, active_skill_ids=skill_ids)
+    if context:
+        sys_msg += f"\n\nRecent context:\n{context}"
+    if thinking_level == "high":
+        sys_msg += "\n\nThink carefully step by step."
+
+    ollama_health = await check_ollama_health()
+    ollama_ok = ollama_health.get("available", False)
+    models = ollama_health.get("models", ["tinyllama"])
+
+    if req.force_provider:
+        provider = req.force_provider
+    elif ollama_ok:
+        provider = "ollama"
+    else:
+        provider = "openai"
+
+    model = state.get("model_override") or (models[0] if provider == "ollama" else "gpt-4o-mini")
+
+    # Decide whether to use agentic loop for streaming
+    perms = get_permissions()
+    use_tools_stream = req.enable_tools
+    if use_tools_stream is None:
+        # Enable tools by default when agent loop is available
+        use_tools_stream = bool(AGENT_LOOP_AVAILABLE and EMERGENT_KEY)
+
+    async def event_generator():
+        await ws_manager.send_typing(session_id, True)
+        yield f"data: {_json.dumps({'type': 'start', 'session_id': session_id, 'provider': provider, 'model': model})}\n\n"
+
+        full_response = ""
+        tool_calls_made = []
+
+        if AGENT_LOOP_AVAILABLE and use_tools_stream and EMERGENT_KEY:
+            soul = load_soul() or ""
+            tools_hint = (
+                "\n\nYou have tools available and should USE them when the user asks you to do something. "
+                "Available: read_emails, draft_email, web_search, fetch_url, terminal, read_file, "
+                "write_file, list_dir, python_exec, memory_store, create_task, http_request, git_run. "
+                "Execute tasks — don't just describe what you would do. "
+                "For notifications from generated scripts, use TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars."
+            )
+            extra_ctx = []
+            if context:
+                extra_ctx = [{"role": "system", "content": f"Conversation context:\n{context}"}]
+            async for event in stream_agent_loop(
+                message=req.message,
+                system_prompt=soul + tools_hint + (req.white_card_mode and "\n\nYou are in 'White Card' mode." or ""),
+                model="gpt-4o",
+                session_id=session_id,
+                db=db,
+                tools_enabled=True,
+                extra_context=extra_ctx
+            ):
+                if event["type"] == "text_chunk":
+                    full_response += event["content"]
+                    yield f"data: {_json.dumps({'type': 'token', 'token': event['content']})}\n\n"
+                elif event["type"] in ("tool_start", "tool_result"):
+                    yield f"data: {_json.dumps(event)}\n\n"
+                elif event["type"] == "done":
+                    tool_calls_made = event.get("tool_calls", [])
+                    yield f"data: {_json.dumps({'type': 'done', 'session_id': session_id, 'provider': 'openai', 'model': 'gpt-4o', 'tool_calls': tool_calls_made, 'iterations': event.get('iterations', 1), 'duration_ms': event.get('duration_ms', 0)})}\n\n"
+                elif event["type"] == "error":
+                    yield f"data: {_json.dumps({'type': 'error', 'message': event.get('message', 'Agent error')})}\n\n"
+
+            # Store conversation
+            usr_turn = {"role": "user", "content": req.message, "timestamp": now_iso()}
+            asst_turn = {"role": "assistant", "content": full_response, "timestamp": now_iso(),
+                         "provider": "openai", "model": "gpt-4o", "tool_calls": tool_calls_made or None}
+            existing_turns = conversation.get("turns", []) if conversation else []
+            new_turns = prune_conversation(existing_turns + [usr_turn, asst_turn])
+            if conversation:
+                conversations_col.update_one({"session_id": session_id},
+                    {"$set": {"turns": new_turns, "updated_at": now_iso()}})
+            else:
+                conversations_col.insert_one({"session_id": session_id, "turns": new_turns,
+                    "created_at": now_iso(), "updated_at": now_iso()})
+            await ws_manager.send_typing(session_id, False)
+            return
+
+        async for chunk in stream_route_and_respond(req.message, sys_msg, model, provider, ollama_ok):
+            # The chunks already include "data: ...\n\n" format
+            if '"done":' in chunk:
+                # Final done chunk — parse it and re-emit with type field
+                try:
+                    raw = chunk.replace("data: ", "", 1).strip()
+                    done_data = _json.loads(raw)
+                    done_data["type"] = "done"
+                    done_data["session_id"] = session_id
+                    full_response = done_data.get("full_response", full_response)
+                    yield f"data: {_json.dumps(done_data)}\n\n"
+                except Exception:
+                    yield chunk
+            else:
+                # Token chunk — add type field
+                try:
+                    raw = chunk.replace("data: ", "", 1).strip()
+                    tok_data = _json.loads(raw)
+                    tok_data["type"] = "token"
+                    token = tok_data.get("token", "")
+                    full_response += token
+                    yield f"data: {_json.dumps(tok_data)}\n\n"
+                except Exception:
+                    yield chunk
+
+        # Store conversation with pruning
+        usr_turn = {"role": "user", "content": req.message, "timestamp": now_iso()}
+        asst_turn = {"role": "assistant", "content": full_response, "timestamp": now_iso(),
+                     "provider": provider, "model": model}
+        existing_turns = conversation.get("turns", []) if conversation else []
+        new_turns = prune_conversation(existing_turns + [usr_turn, asst_turn])
+
+        if conversation:
+            conversations_col.update_one({"session_id": session_id},
+                {"$set": {"turns": new_turns, "updated_at": now_iso()}})
+        else:
+            conversations_col.insert_one({"session_id": session_id, "turns": new_turns,
+                "created_at": now_iso(), "updated_at": now_iso()})
+
+        settings = settings_col.find_one({"user_id": "default"}) or {}
+        if settings.get("learning_enabled", True):
+            asyncio.create_task(extract_and_learn(req.message, full_response, session_id))
+
+        await ws_manager.send_typing(session_id, False)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream",
+                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest):
     session_id = req.session_id or f"session_{uuid.uuid4().hex[:12]}"
+
+    # Handle chat commands first
+    cmd_result = await handle_chat_command(req.message, session_id)
+    if cmd_result:
+        return {
+            "session_id": session_id,
+            "response": cmd_result["response"],
+            "provider": "system",
+            "model": "command",
+            "routing": {"route": "command"},
+            "fallback_chain": [],
+            "duration_ms": 0,
+            "command": cmd_result.get("command"),
+        }
 
     conversation = conversations_col.find_one({"session_id": session_id})
     context = ""
@@ -704,18 +1433,72 @@ async def chat_endpoint(req: ChatRequest):
     if req.white_card_mode:
         system_addition = "\n\nYou are in 'White Card' mode. Be proactive: suggest ideas, improvements, next steps. Explore creative solutions. Think ahead for the user."
 
+    # Get session state (thinking level, model override)
+    state = _session_state.get(session_id, {})
+    thinking_level = state.get("thinking_level", "low")
+    model_override = state.get("model_override")
+
     # Auto-classify agent if not specified
     agent_id = req.agent_id
     if not agent_id or agent_id == "auto":
         agent_id = classify_task_for_agent(req.message)
 
-    result = await route_and_respond(
-        message=req.message,
-        system_message=system_addition,
-        conversation_context=context,
-        force_provider=req.force_provider,
-        agent_id=agent_id if agent_id != "auto" else None
-    )
+    # Decide whether to use the agentic tool loop
+    perms = get_permissions()
+    use_tools = req.enable_tools
+    if use_tools is None:
+        # Enable tools by default when agent loop is available
+        use_tools = bool(AGENT_LOOP_AVAILABLE and EMERGENT_KEY)
+
+    tool_calls_made = []
+    await ws_manager.send_typing(session_id, True)
+
+    if AGENT_LOOP_AVAILABLE and use_tools and EMERGENT_KEY:
+        # Build system prompt for agent loop
+        soul = load_soul() or ""
+        tools_hint = (
+            "\n\nYou have tools available and should USE them when the user asks you to do something. "
+            "Available: read_emails, draft_email, web_search, fetch_url, terminal, read_file, "
+            "write_file, list_dir, python_exec, memory_store, create_task, http_request, git_run. "
+            "Execute tasks — don't just describe what you would do. "
+            "For notifications from generated scripts, use TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars."
+        )
+        extra_ctx = []
+        if context:
+            extra_ctx = [{"role": "system", "content": f"Conversation context:\n{context}"}]
+        model = "gpt-4o"
+        agent_result = await run_agent_loop(
+            message=req.message,
+            system_prompt=soul + tools_hint + system_addition,
+            model=model,
+            session_id=session_id,
+            db=db,
+            tools_enabled=True,
+            extra_context=extra_ctx
+        )
+        result = {
+            "response": agent_result["response"],
+            "provider_used": "openai",
+            "model_used": model,
+            "routing": {"route": "agent_loop", "iterations": agent_result["iterations"]},
+            "fallback_chain": [],
+            "duration_ms": agent_result["duration_ms"],
+            "usage": {},
+            "k1_prompt_used": None,
+            "category": "agent"
+        }
+        tool_calls_made = agent_result["tool_calls"]
+    else:
+        result = await route_and_respond(
+            message=req.message,
+            system_message=system_addition,
+            conversation_context=context,
+            force_provider=req.force_provider or (model_override if model_override else None),
+            agent_id=agent_id if agent_id != "auto" else None,
+            thinking_level=thinking_level,
+        )
+
+    await ws_manager.send_typing(session_id, False)
 
     user_turn = {"role": "user", "content": req.message, "timestamp": now_iso()}
     assistant_turn = {
@@ -726,14 +1509,16 @@ async def chat_endpoint(req: ChatRequest):
         "model": result["model_used"],
         "routing": result["routing"],
         "agent_id": agent_id,
-        "k1_prompt": result.get("k1_prompt_used")
+        "k1_prompt": result.get("k1_prompt_used"),
+        "tool_calls": tool_calls_made if tool_calls_made else None
     }
 
     if conversation:
+        existing_turns = conversation.get("turns", [])
+        new_turns = prune_conversation(existing_turns + [user_turn, assistant_turn])
         conversations_col.update_one(
             {"session_id": session_id},
-            {"$push": {"turns": {"$each": [user_turn, assistant_turn]}},
-             "$set": {"updated_at": now_iso()}}
+            {"$set": {"turns": new_turns, "updated_at": now_iso()}}
         )
     else:
         conversations_col.insert_one({
@@ -746,6 +1531,27 @@ async def chat_endpoint(req: ChatRequest):
     if settings.get("learning_enabled", True):
         await extract_and_learn(req.message, result["response"], session_id)
 
+    # Build usage footer based on session preference
+    usage = result.get("usage", {})
+    usage_mode = _session_state.get(session_id, {}).get("usage_display", "tokens")
+    usage_footer = None
+    if usage_mode == "tokens" and usage:
+        usage_footer = f"{usage.get('total_tokens', 0)} tokens"
+    elif usage_mode == "full" and usage:
+        usage_footer = f"{usage.get('total_tokens', 0)} tokens · ${usage.get('cost_usd', 0):.4f}"
+
+    # Show verbose routing if flag set
+    verbose = _session_state.get(session_id, {}).get("verbose", False)
+    trace = _session_state.get(session_id, {}).get("trace", False)
+    routing_info = None
+    if verbose:
+        routing_info = result.get("routing")
+    trace_info = None
+    if trace:
+        trace_info = result.get("fallback_chain")
+
+    await ws_manager.send_event("response", {"session_id": session_id})
+
     return {
         "session_id": session_id,
         "response": result["response"],
@@ -756,7 +1562,12 @@ async def chat_endpoint(req: ChatRequest):
         "duration_ms": result["duration_ms"],
         "agent_id": agent_id,
         "k1_prompt": result.get("k1_prompt_used"),
-        "category": result.get("category")
+        "category": result.get("category"),
+        "usage": usage,
+        "usage_footer": usage_footer,
+        "routing_info": routing_info,
+        "trace_info": trace_info,
+        "tool_calls": tool_calls_made if tool_calls_made else None,
     }
 
 
@@ -1170,8 +1981,16 @@ async def get_settings():
         return {"ollama_url": OLLAMA_URL, "ollama_model": "tinyllama", "preferred_provider": "auto",
                 "preferred_model": "", "learning_enabled": True, "white_card_enabled": False,
                 "quiet_hours_start": "", "quiet_hours_end": "", "telegram_chat_id": "",
-                "telegram_enabled": False, "hardware_ram": "16gb"}
-    return serialize_doc(settings)
+                "telegram_enabled": False, "hardware_ram": "16gb", "morning_summary_hour_utc": 8,
+                "email_host": "smtp.gmail.com", "email_port": 587, "email_user": "",
+                "email_pass": "", "email_from": "", "email_enabled": False}
+    if "morning_summary_hour_utc" not in settings:
+        settings["morning_summary_hour_utc"] = 8
+    # Never expose email password to frontend
+    doc = serialize_doc(settings)
+    if doc.get("email_pass"):
+        doc["email_pass"] = "••••••••"
+    return doc
 
 
 @app.put("/api/settings")
@@ -1179,9 +1998,13 @@ async def update_settings(req: SettingsUpdate):
     update = {"updated_at": now_iso()}
     for field in ["ollama_url", "ollama_model", "preferred_provider", "preferred_model",
                   "learning_enabled", "white_card_enabled", "quiet_hours_start", "quiet_hours_end",
-                  "telegram_chat_id", "telegram_enabled", "hardware_ram"]:
+                  "telegram_chat_id", "telegram_enabled", "hardware_ram", "morning_summary_hour_utc",
+                  "email_host", "email_port", "email_user", "email_pass", "email_from", "email_enabled"]:
         val = getattr(req, field, None)
         if val is not None:
+            # Don't overwrite email_pass with the masked placeholder
+            if field == "email_pass" and val == "••••••••":
+                continue
             update[field] = val
     settings_col.update_one({"user_id": "default"}, {"$set": update})
     log_activity("system", {"event": "settings_updated", "changes": update})
@@ -1227,6 +2050,111 @@ async def fs_list_endpoint(req: FileReadRequest):
     if result["success"]:
         log_activity("tool_execution", {"tool": "filesystem", "action": "list", "path": req.path})
     return result
+
+
+# ── Preview endpoint: serve files Ombra created ─────────────
+PREVIEW_ALLOWED_DIRS = ["/tmp", "/home/azureuser"]
+PREVIEW_ALLOWED_EXT = {
+    ".html", ".htm", ".css", ".js", ".json", ".txt", ".md",
+    ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico",
+}
+PREVIEW_MIME = {
+    ".html": "text/html", ".htm": "text/html", ".css": "text/css",
+    ".js": "application/javascript", ".json": "application/json",
+    ".txt": "text/plain", ".md": "text/plain", ".svg": "image/svg+xml",
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".ico": "image/x-icon",
+}
+
+@app.get("/api/preview")
+async def preview_file(path: str = Query(...)):
+    """Serve a file for in-app preview (HTML, images, etc.)."""
+    import pathlib
+    real = str(pathlib.Path(path).resolve())
+    # Security: must be under an allowed directory
+    if not any(real.startswith(d) for d in PREVIEW_ALLOWED_DIRS):
+        raise HTTPException(403, "Path not in allowed preview directories")
+    ext = pathlib.Path(real).suffix.lower()
+    if ext not in PREVIEW_ALLOWED_EXT:
+        raise HTTPException(400, f"File type {ext} not allowed for preview")
+    if not os.path.isfile(real):
+        raise HTTPException(404, "File not found")
+    media = PREVIEW_MIME.get(ext, "application/octet-stream")
+    return FileResponse(real, media_type=media)
+
+@app.get("/api/preview/dir")
+async def preview_list_dir(path: str = Query("/tmp")):
+    """List files in a directory for preview browsing."""
+    import pathlib
+    real = str(pathlib.Path(path).resolve())
+    if not any(real.startswith(d) for d in PREVIEW_ALLOWED_DIRS):
+        raise HTTPException(403, "Path not in allowed preview directories")
+    if not os.path.isdir(real):
+        raise HTTPException(404, "Directory not found")
+    entries = []
+    try:
+        for item in sorted(os.listdir(real)):
+            full = os.path.join(real, item)
+            entries.append({
+                "name": item,
+                "is_dir": os.path.isdir(full),
+                "size": os.path.getsize(full) if os.path.isfile(full) else None,
+                "ext": pathlib.Path(item).suffix.lower(),
+            })
+    except PermissionError:
+        raise HTTPException(403, "Permission denied")
+    return {"path": real, "entries": entries}
+
+
+PROXY_ALLOWED_PORTS = set(range(3000, 9999))  # only proxy local dev server ports
+
+def _rewrite_html_for_proxy(html: str, port: int) -> str:
+    """Rewrite root-absolute HTML asset links so React/Vite/Flask pages load via proxy."""
+    base = f"/api/preview/proxy/{port}/"
+    # Insert base href if missing to make relative links resolve through proxy path route.
+    if "<head" in html and "<base " not in html:
+        html = html.replace("<head>", f'<head><base href="{base}">', 1)
+    # Rewrite root-absolute attributes that would otherwise hit nginx root.
+    for attr in ("src", "href", "action"):
+        html = html.replace(f'{attr}="/', f'{attr}="{base}')
+        html = html.replace(f"{attr}='/", f"{attr}='{base}")
+    return html
+
+
+async def _preview_proxy_impl(port: int, path: str = "/"):
+    if port not in PROXY_ALLOWED_PORTS:
+        raise HTTPException(400, f"Port {port} not in allowed range (3000-9998)")
+    clean_path = "/" + (path or "").lstrip("/")
+    target = f"http://127.0.0.1:{port}{clean_path}"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(target, follow_redirects=True)
+        content_type = resp.headers.get("content-type", "text/html")
+        from starlette.responses import Response
+
+        # For HTML documents, rewrite root-absolute links to remain inside proxy.
+        if "text/html" in content_type.lower():
+            text = resp.text
+            text = _rewrite_html_for_proxy(text, port)
+            return Response(content=text, status_code=resp.status_code, media_type="text/html")
+
+        return Response(content=resp.content, status_code=resp.status_code, media_type=content_type)
+    except httpx.ConnectError:
+        raise HTTPException(502, f"Cannot connect to local server on port {port}")
+    except Exception as e:
+        raise HTTPException(502, f"Proxy error: {str(e)[:200]}")
+
+
+@app.get("/api/preview/proxy")
+async def preview_proxy_query(port: int = Query(...), path: str = Query("/")):
+    """Back-compat query route: /api/preview/proxy?port=8000&path=/index.html"""
+    return await _preview_proxy_impl(port, path)
+
+
+@app.get("/api/preview/proxy/{port}/{full_path:path}")
+async def preview_proxy_path(port: int, full_path: str):
+    """Preferred route: /api/preview/proxy/8000/index.html"""
+    return await _preview_proxy_impl(port, f"/{full_path}")
 
 
 # ============================================================
@@ -1519,6 +2447,203 @@ async def send_telegram_summary():
 
 
 # ============================================================
+# EMAIL
+# ============================================================
+@app.post("/api/email/test")
+async def test_email():
+    """Send a test email using the configured SMTP settings."""
+    import smtplib, ssl
+    from email.mime.text import MIMEText
+
+    settings = settings_col.find_one({"user_id": "default"}) or {}
+    host = settings.get("email_host") or os.environ.get("EMAIL_HOST", "smtp.gmail.com")
+    port = int(settings.get("email_port") or os.environ.get("EMAIL_PORT", "587"))
+    user = settings.get("email_user") or os.environ.get("EMAIL_USER", "")
+    passwd = settings.get("email_pass") or os.environ.get("EMAIL_PASS", "")
+    from_addr = settings.get("email_from") or user
+
+    if not user or not passwd:
+        return {"success": False, "error": "Email user/password not configured"}
+
+    try:
+        msg = MIMEText("This is a test email from Ombra. Your email configuration is working correctly.")
+        msg["Subject"] = "Ombra – Email Test"
+        msg["From"] = from_addr
+        msg["To"] = user  # send test to self
+        context = ssl.create_default_context()
+        with smtplib.SMTP(host, port, timeout=10) as server:
+            server.ehlo()
+            server.starttls(context=context)
+            server.login(user, passwd)
+            server.sendmail(from_addr, user, msg.as_string())
+        log_activity("system", {"event": "email_test", "status": "success", "host": host})
+        return {"success": True, "message": f"Test email sent to {user}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)[:200]}
+
+
+# ── Email Provider Connect (App Passwords) ────────────────────────────────────
+PROVIDER_SMTP = {
+    "google": {"host": "smtp.gmail.com", "port": 587},
+    "microsoft": {"host": "smtp.office365.com", "port": 587},
+    "icloud": {"host": "smtp.mail.me.com", "port": 587},
+}
+
+
+class EmailProviderConnect(BaseModel):
+    provider: str  # google | microsoft | icloud
+    email: str
+    app_password: str
+
+
+@app.get("/api/email/provider/status")
+async def email_provider_status():
+    """Return which email provider is connected."""
+    s = settings_col.find_one({"user_id": "default"}) or {}
+    provider = s.get("email_provider", "none")
+    return {
+        "provider": provider,
+        "email": s.get("email_provider_email", ""),
+        "connected": provider != "none" and bool(s.get("email_provider_email")),
+    }
+
+
+@app.post("/api/email/provider/connect")
+async def email_provider_connect(req: EmailProviderConnect):
+    """Verify SMTP credentials and save provider connection."""
+    import smtplib, ssl
+    if req.provider not in PROVIDER_SMTP:
+        return {"success": False, "error": f"Unknown provider: {req.provider}"}
+    if not req.email or not req.app_password:
+        return {"success": False, "error": "Email and app password are required"}
+    smtp = PROVIDER_SMTP[req.provider]
+    try:
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP(smtp["host"], smtp["port"], timeout=10) as server:
+            server.ehlo()
+            server.starttls(context=ctx)
+            server.login(req.email, req.app_password)
+    except Exception as e:
+        return {"success": False, "error": f"SMTP login failed: {str(e)[:150]}"}
+    settings_col.update_one({"user_id": "default"}, {"$set": {
+        "email_provider": req.provider,
+        "email_provider_email": req.email,
+        "email_provider_pass": req.app_password,
+        "email_host": smtp["host"],
+        "email_port": smtp["port"],
+        "email_user": req.email,
+        "email_pass": req.app_password,
+        "email_from": req.email,
+        "email_enabled": True,
+        "updated_at": now_iso(),
+    }}, upsert=True)
+    log_activity("system", {"event": "email_provider_connected", "provider": req.provider, "email": req.email})
+    return {"success": True, "email": req.email}
+
+
+@app.post("/api/email/provider/disconnect")
+async def email_provider_disconnect():
+    """Disconnect email provider."""
+    s = settings_col.find_one({"user_id": "default"}) or {}
+    provider = s.get("email_provider", "none")
+    settings_col.update_one({"user_id": "default"}, {
+        "$set": {
+            "email_provider": "none",
+            "email_provider_email": "",
+            "email_provider_pass": "",
+            "email_enabled": False,
+            "updated_at": now_iso(),
+        }
+    })
+    log_activity("system", {"event": "email_provider_disconnected", "provider": provider})
+    return {"success": True, "disconnected": provider}
+
+
+# ── Email Drafts ──────────────────────────────────────────────────────────────
+@app.get("/api/email/drafts")
+async def list_email_drafts():
+    """Return all pending email drafts."""
+    drafts = list(email_drafts_col.find({"status": "pending"}).sort("created_at", DESCENDING))
+    for d in drafts:
+        d["_id"] = str(d["_id"])
+    return {"drafts": drafts}
+
+
+@app.get("/api/email/drafts/count")
+async def count_email_drafts():
+    """Return count of pending drafts (for badge)."""
+    count = email_drafts_col.count_documents({"status": "pending"})
+    return {"count": count}
+
+
+@app.post("/api/email/drafts/{draft_id}/send")
+async def send_email_draft(draft_id: str):
+    """Approve and send an email draft via SMTP."""
+    import smtplib, ssl
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+    from bson import ObjectId
+
+    try:
+        draft = email_drafts_col.find_one({"_id": ObjectId(draft_id), "status": "pending"})
+    except Exception:
+        raise HTTPException(404, "Invalid draft ID")
+    if not draft:
+        raise HTTPException(404, "Draft not found or already processed")
+
+    # Get email config
+    s = settings_col.find_one({"user_id": "default"}) or {}
+    host = s.get("email_host") or os.environ.get("EMAIL_HOST", "smtp.gmail.com")
+    port = int(s.get("email_port") or os.environ.get("EMAIL_PORT", "587"))
+    user = s.get("email_user") or os.environ.get("EMAIL_USER", "")
+    passwd = s.get("email_pass") or os.environ.get("EMAIL_PASS", "")
+    from_addr = s.get("email_from") or user
+
+    if not user or not passwd:
+        return {"success": False, "error": "Email not configured. Connect a provider in Settings first."}
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = draft["subject"]
+        msg["From"] = from_addr
+        msg["To"] = draft["to"]
+        mime_type = "html" if draft.get("html") else "plain"
+        msg.attach(MIMEText(draft["body"], mime_type))
+
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP(host, port, timeout=15) as server:
+            server.ehlo()
+            server.starttls(context=ctx)
+            server.login(user, passwd)
+            server.sendmail(from_addr, draft["to"], msg.as_string())
+
+        email_drafts_col.update_one({"_id": ObjectId(draft_id)}, {"$set": {
+            "status": "sent",
+            "sent_at": now_iso(),
+        }})
+        log_activity("system", {"event": "email_draft_sent", "to": draft["to"], "subject": draft["subject"]})
+        return {"success": True, "message": f"Email sent to {draft['to']}"}
+    except Exception as e:
+        return {"success": False, "error": f"Send failed: {str(e)[:200]}"}
+
+
+@app.delete("/api/email/drafts/{draft_id}")
+async def delete_email_draft(draft_id: str):
+    """Discard an email draft."""
+    from bson import ObjectId
+    try:
+        result = email_drafts_col.update_one(
+            {"_id": ObjectId(draft_id), "status": "pending"},
+            {"$set": {"status": "discarded", "discarded_at": now_iso()}}
+        )
+    except Exception:
+        raise HTTPException(404, "Invalid draft ID")
+    if result.modified_count == 0:
+        raise HTTPException(404, "Draft not found or already processed")
+    return {"success": True}
+
+
+# ============================================================
 # WHITE CARD (Enhanced with intuition)
 # ============================================================
 @app.get("/api/white-card/suggestions")
@@ -1640,6 +2765,132 @@ async def get_intuition_suggestions():
             })
 
     return {"suggestions": suggestions, "timestamp": now_iso()}
+
+
+# ============================================================
+# WORKSPACE — SOUL, SKILLS (OpenClaw-style)
+# ============================================================
+
+class SkillCreate(BaseModel):
+    id: str
+    content: str
+
+@app.get("/api/workspace/soul")
+async def get_soul():
+    """Return the SOUL.md persona content."""
+    return {"content": load_soul()}
+
+@app.get("/api/skills")
+async def get_skills():
+    """List all installed skills and which are active."""
+    skills = list_skills()
+    active = get_active_skill_ids(db)
+    for s in skills:
+        s["active"] = s["id"] in active
+    return skills
+
+@app.get("/api/skills/{skill_id}")
+async def get_skill(skill_id: str):
+    content = load_skill(skill_id)
+    if not content:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    return {"id": skill_id, "content": content}
+
+@app.post("/api/skills")
+async def create_skill(req: SkillCreate):
+    """Install or update a skill."""
+    ok = install_skill(req.id, req.content)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to install skill")
+    return {"status": "installed", "id": req.id}
+
+@app.delete("/api/skills/{skill_id}")
+async def remove_skill(skill_id: str):
+    """Remove a skill."""
+    # Also deactivate it
+    settings_col.update_one({"user_id": "default"}, {"$pull": {"active_skills": skill_id}})
+    ok = delete_skill(skill_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to delete skill")
+    return {"status": "deleted", "id": skill_id}
+
+@app.post("/api/skills/{skill_id}/activate")
+async def activate_skill(skill_id: str):
+    """Add a skill to the global active list."""
+    skills = [s["id"] for s in list_skills()]
+    if skill_id not in skills:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    settings_col.update_one(
+        {"user_id": "default"},
+        {"$addToSet": {"active_skills": skill_id}}
+    )
+    return {"status": "activated", "id": skill_id}
+
+@app.post("/api/skills/{skill_id}/deactivate")
+async def deactivate_skill(skill_id: str):
+    """Remove a skill from the global active list."""
+    settings_col.update_one(
+        {"user_id": "default"},
+        {"$pull": {"active_skills": skill_id}}
+    )
+    return {"status": "deactivated", "id": skill_id}
+
+
+# ============================================================
+# WEBHOOKS — inbound triggers → agent
+# ============================================================
+class WebhookCreate(BaseModel):
+    name: str
+    description: str = ""
+    agent_id: Optional[str] = None
+
+@app.get("/api/webhooks")
+async def list_webhooks():
+    hooks = list(webhooks_col.find().sort("created_at", DESCENDING).limit(50))
+    return [serialize_doc(h) for h in hooks]
+
+@app.post("/api/webhooks")
+async def create_webhook_endpoint(req: WebhookCreate):
+    hook_id = f"hook_{uuid.uuid4().hex[:12]}"
+    doc = {
+        "hook_id": hook_id,
+        "name": req.name,
+        "description": req.description,
+        "agent_id": req.agent_id,
+        "created_at": now_iso(),
+        "trigger_count": 0,
+    }
+    webhooks_col.insert_one(doc)
+    return {"hook_id": hook_id, "name": req.name}
+
+@app.delete("/api/webhooks/{hook_id}")
+async def delete_webhook(hook_id: str):
+    result = webhooks_col.delete_one({"hook_id": hook_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    return {"status": "deleted"}
+
+@app.post("/api/webhooks/{hook_id}/trigger")
+async def trigger_webhook(hook_id: str, request: Request):
+    hook = webhooks_col.find_one({"hook_id": hook_id})
+    if not hook:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    payload_summary = str(payload)[:500]
+    message = f"[Webhook trigger from '{hook.get('name', hook_id)}']: {payload_summary}"
+    result = await route_and_respond(message=message, agent_id=hook.get("agent_id"))
+    webhooks_col.update_one(
+        {"hook_id": hook_id},
+        {"$inc": {"trigger_count": 1}, "$set": {"last_triggered": now_iso()}}
+    )
+    activity_col.insert_one({
+        "type": "webhook_trigger", "hook_id": hook_id, "hook_name": hook.get("name"),
+        "response_preview": result["response"][:200], "timestamp": now_iso()
+    })
+    return {"hook_id": hook_id, "response": result["response"], "provider": result.get("provider_used")}
 
 
 # ============================================================
