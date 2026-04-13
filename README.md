@@ -2,7 +2,9 @@
 
 <div align="center">
 
-![Ombra Banner: ](./Soldat%20futuriste%20_OMBRA_%20en%20armure%20(1).png)
+<p align="center">
+  <img src="./OMBRA_logo.png.png" alt="Ombra Banner" width="40"/>
+</p>
 
 **A complete, production-ready autonomous AI agent system with local-first intelligence, multi-agent orchestration, and advanced self-learning capabilities.**
 
