@@ -3,7 +3,7 @@
 <div align="center">
 
 <p align="center">
-  <img src="./OMBRA_logo.png.png" alt="Ombra Banner" width="40"/>
+  <img src="./OMBRA_logo.png" alt="Ombra Banner" width="40"/>
 </p>
 
 **A complete, production-ready autonomous AI agent system with local-first intelligence, multi-agent orchestration, and advanced self-learning capabilities.**
