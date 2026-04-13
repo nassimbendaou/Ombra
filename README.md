@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Ombra Banner](https://via.placeholder.com/1200x300/0a0a0a/00ff88?text=OMBRA+|+Autonomous+AI+Agent+System)
+![Ombra Banner: ](./Soldat%20futuriste%20_OMBRA_%20en%20armure%20(1).png)
 
 **A complete, production-ready autonomous AI agent system with local-first intelligence, multi-agent orchestration, and advanced self-learning capabilities.**
 
@@ -807,7 +807,6 @@ MIT License - see [LICENSE](./LICENSE) for details.
 
 <div align="center">
 
-**Built with ❤️ by the Ombra Team**
 
 ⭐ Star us on GitHub if you find this helpful!
 

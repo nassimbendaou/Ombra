@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from './ui/card';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { ChevronDown, ChevronUp, Clock, CheckCircle2, XCircle, Terminal } from 'lucide-react';
+import { ChevronDown, ChevronUp, Clock, CheckCircle2, XCircle, Terminal, ExternalLink } from 'lucide-react';
 import ModelBadge from './ModelBadge';
 
 export default function ToolCallCard({ toolCall }) {
@@ -30,6 +30,11 @@ export default function ToolCallCard({ toolCall }) {
                 <Clock className="w-3 h-3 mr-1" />
                 {toolCall.duration_ms}ms
               </Badge>
+            )}
+            {toolCall.preview_url && (
+              <a href={toolCall.preview_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[10px] text-primary hover:underline">
+                <ExternalLink className="w-3 h-3" /> Preview
+              </a>
             )}
           </div>
           <Button
