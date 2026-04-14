@@ -13,6 +13,7 @@ import MemoryManagement from './pages/MemoryManagement';
 import Analytics from './pages/Analytics';
 import Skills from './pages/Skills';
 import EmailDrafts from './pages/EmailDrafts';
+import BrainView from './pages/BrainView';
 import { Toaster } from './components/ui/sonner';
 import './App.css';
 
@@ -29,6 +30,7 @@ function App() {
             <Route path="/models" element={<ModelManager />} />
             <Route path="/memories" element={<MemoryManagement />} />
             <Route path="/analytics" element={<Analytics />} />
+            <Route path="/brain" element={<BrainView />} />
             <Route path="/skills" element={<Skills />} />
             <Route path="/permissions" element={<Permissions />} />
             <Route path="/activity" element={<ActivityTimeline />} />

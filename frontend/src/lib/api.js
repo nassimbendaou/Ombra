@@ -7,7 +7,8 @@ async function fetchAPI(path, options = {}) {
     ...options,
   });
   if (!response.ok) {
-    const error = await response.text();
+    let error = `${response.status} ${response.statusText}`;
+    try { error = await response.clone().text() || error; } catch (_) {}
     throw new Error(`API Error ${response.status}: ${error}`);
   }
   return response.json();
@@ -153,6 +154,9 @@ export const pauseAutonomy = () => fetchAPI('/autonomy/pause', { method: 'POST' 
 export const resumeAutonomy = () => fetchAPI('/autonomy/resume', { method: 'POST' });
 export const stopAutonomy = () => fetchAPI('/autonomy/stop', { method: 'POST' });
 export const forceTick = () => fetchAPI('/autonomy/tick', { method: 'POST' });
+
+// Brain View
+export const getBrainState = () => fetchAPI('/brain/state');
 
 // Phase 4: Task Lifecycle
 export const pauseTask = (taskId) => fetchAPI(`/tasks/${taskId}/pause`, { method: 'PUT' });

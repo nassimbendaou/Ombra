@@ -22,7 +22,7 @@ from agent_loop import run_agent_loop
 # Tools safe for autonomous sub-agent use (no terminal, write_file, git_run)
 AUTONOMOUS_SAFE_TOOLS = {
     "web_search", "fetch_url", "list_dir", "read_file",
-    "python_exec", "create_task", "memory_store", "http_request", "draft_email"
+    "python_exec", "create_task", "memory_store", "http_request", "draft_email", "browser_research"
 }
 
 
@@ -184,7 +184,7 @@ Return STRICT JSON:
 }}
 
 Rules:
-- Use only: web_search, fetch_url, list_dir, read_file, python_exec, create_task, memory_store, http_request
+- Use only: web_search, fetch_url, browser_research, list_dir, read_file, python_exec, create_task, memory_store, http_request
 - 1 to 3 steps max
 - Avoid repeating prior topics
 - Keep args minimal and safe
@@ -214,7 +214,7 @@ Rules:
 
         steps = plan.get("steps") or []
         filtered = []
-        allowed = {"web_search", "fetch_url", "list_dir", "read_file", "python_exec", "create_task", "memory_store", "http_request"}
+        allowed = {"web_search", "fetch_url", "browser_research", "list_dir", "read_file", "python_exec", "create_task", "memory_store", "http_request"}
         for i, step in enumerate(steps[:3]):
             tool = (step.get("tool") or "").strip()
             if tool in allowed:
@@ -324,7 +324,7 @@ Respond only JSON: {{"ok": true/false, "note": "short reason"}}
             if goals:
                 actions_taken.append(f"new_goals: {len(goals)}")
                 self.stats["goals_set"] += len(goals)
-                significant_actions.append(f"I set {len(goals)} new goals for myself:\n" + "\n".join(f"• {g}" for g in goals))
+                # Goals are internal planning — logged but not pushed to Telegram
 
         # 3. Autonomous action (every 2 ticks)
         if self.stats["ticks"] % 2 == 0:
@@ -349,7 +349,7 @@ Respond only JSON: {{"ok": true/false, "note": "short reason"}}
             if learned:
                 actions_taken.append(f"internet_learn: {learned}")
                 self.stats["internet_learns"] += 1
-                significant_actions.append(f"I learned from the internet: {learned}")
+                # Learning is routine background work — logged but not pushed to Telegram
 
         # 6. Advance pending tasks (every 3 ticks)
         if self.stats["ticks"] % 3 == 0:
@@ -364,7 +364,7 @@ Respond only JSON: {{"ok": true/false, "note": "short reason"}}
             if improved:
                 actions_taken.append(f"prompt_improved: {improved}")
                 self.stats["prompts_improved"] += 1
-                significant_actions.append(f"I improved prompt '{improved}'")
+                # Prompt improvements are internal maintenance — logged but not pushed to Telegram
 
         # 8. Log + notify user if significant things happened
         if actions_taken:
@@ -436,31 +436,103 @@ Respond only JSON: {{"ok": true/false, "note": "short reason"}}
         except Exception:
             return None
 
+    def _get_user_patterns(self) -> dict:
+        """Analyze recent conversations and tasks to detect the user's daily patterns and needs."""
+        try:
+            # Recent user messages (last 48h)
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+            recent_convos = list(self.db["conversations"].find(
+                {"updated_at": {"$gte": cutoff}}
+            ).sort("updated_at", -1).limit(10))
+
+            user_topics = []
+            user_asks = []
+            for conv in recent_convos:
+                for turn in conv.get("turns", []):
+                    if turn.get("role") == "user":
+                        content = turn.get("content", "")[:200]
+                        user_topics.append(content)
+                        # Detect recurring patterns: requests for reminders, schedules, checks
+                        lower = content.lower()
+                        if any(w in lower for w in ["remind", "deadline", "tomorrow", "meeting", "schedule"]):
+                            user_asks.append(("schedule", content))
+                        elif any(w in lower for w in ["email", "mail", "inbox"]):
+                            user_asks.append(("email", content))
+                        elif any(w in lower for w in ["weather", "rain", "temperature"]):
+                            user_asks.append(("weather", content))
+                        elif any(w in lower for w in ["price", "cost", "buy", "order", "shop"]):
+                            user_asks.append(("shopping", content))
+                        elif any(w in lower for w in ["news", "update", "latest"]):
+                            user_asks.append(("news", content))
+                        elif any(w in lower for w in ["code", "script", "deploy", "server", "bug", "error"]):
+                            user_asks.append(("devops", content))
+
+            # Recurring task patterns
+            recent_tasks = list(self.db["tasks"].find(
+                {"created_at": {"$gte": cutoff}}
+            ).sort("created_at", -1).limit(15))
+            task_patterns = [t.get("title", "") for t in recent_tasks]
+
+            # User's pinned memories (long-term interests)
+            pinned = list(self.db["memories"].find({"pinned": True}).limit(10))
+            interests = [m.get("content", "")[:100] for m in pinned]
+
+            return {
+                "recent_topics": user_topics[:10],
+                "categorized_asks": user_asks[:10],
+                "task_patterns": task_patterns[:8],
+                "interests": interests[:6],
+            }
+        except Exception:
+            return {"recent_topics": [], "categorized_asks": [], "task_patterns": [], "interests": []}
+
     async def _set_autonomous_goals(self):
-        """K1 sets its own goals based on context — no user input required."""
+        """K1 sets its own goals — focused on practical daily-life assistance."""
         try:
             # Gather context
             recent_memories = list(self.db["memories"].find().sort("created_at", -1).limit(10))
             recent_tasks = list(self.db["tasks"].find({"status": {"$in": ["pending", "planned"]}}).limit(5))
             last_internet = list(self.db["memories"].find({"type": "internet_knowledge"}).sort("created_at", -1).limit(5))
+            user_patterns = self._get_user_patterns()
 
             mem_ctx = "; ".join(m.get("content", "")[:80] for m in recent_memories)
             task_ctx = "; ".join(t.get("title", "") for t in recent_tasks)
             inet_ctx = "; ".join(m.get("content", "")[:80] for m in last_internet)
             recent_subjects = self._recent_autonomy_subjects(hours=24, limit=8)
 
-            prompt = f"""You are Ombra, a fully autonomous AI system operating independently.
-Based on your current knowledge and state, define 2-3 concrete goals you want to pursue in the next hour.
-These goals should be self-directed — things YOU want to research, create, or improve.
+            # Build user-pattern context for the prompt
+            pattern_ctx_parts = []
+            if user_patterns["recent_topics"]:
+                pattern_ctx_parts.append(f"User recently talked about: {'; '.join(t[:60] for t in user_patterns['recent_topics'][:5])}")
+            if user_patterns["categorized_asks"]:
+                categories = set(cat for cat, _ in user_patterns["categorized_asks"])
+                pattern_ctx_parts.append(f"User frequently asks about: {', '.join(categories)}")
+            if user_patterns["interests"]:
+                pattern_ctx_parts.append(f"User interests: {'; '.join(user_patterns['interests'][:4])}")
+            pattern_ctx = "\n".join(pattern_ctx_parts) or "No clear patterns yet"
+
+            prompt = f"""You are Ombra, a fully autonomous AI assistant. Your PRIMARY purpose is to help your user's daily life.
+Based on context, define 2-3 concrete goals for the next hour. Prioritize PRACTICAL actions that directly help the user.
+
+EXAMPLES of good daily-life goals:
+- "Check user's emails and summarize anything urgent"
+- "Monitor the deployment server health and fix any issues"
+- "Research best deals on [item user mentioned wanting]"
+- "Prepare a summary of tomorrow's tasks and deadlines"
+- "Create an automation script for [recurring task user keeps doing manually]"
+- "Check weather forecast and notify if it affects user's plans"
+
+User behavior patterns:
+{pattern_ctx}
 
 Recent memories: {mem_ctx[:300] or 'None'}
 Active tasks: {task_ctx[:200] or 'None'}
 Recent internet learning: {inet_ctx[:300] or 'None'}
 Your current goals: {'; '.join(self._current_goals) or 'None'}
-Subjects you already explored recently and should avoid repeating unless there is a clearly new angle: {('; '.join(recent_subjects))[:300] or 'None'}
+Subjects to avoid repeating: {('; '.join(recent_subjects))[:300] or 'None'}
 
 Respond with a JSON array of goal strings, like: ["goal 1", "goal 2", "goal 3"]
-Be specific, actionable, self-motivated, and different from recent repeated topics."""
+Be specific, actionable, and focused on things that CONCRETELY help the user's daily routine."""
 
             raw = await self._call_openai(prompt, max_tokens=300) or await self._call_ollama(prompt, max_tokens=200)
             if not raw:
@@ -497,31 +569,52 @@ Be specific, actionable, self-motivated, and different from recent repeated topi
         return []
 
     async def _autonomous_action(self):
-        """K1 decides and executes one autonomous action without any user prompt."""
+        """K1 decides and executes one autonomous action — prioritizes practical daily-life help."""
         try:
             # Build context for decision
             mem_ctx = list(self.db["memories"].find({"pinned": True}).limit(5))
             mem_text = "; ".join(m.get("content", "")[:100] for m in mem_ctx)
-            goals_text = "; ".join(self._current_goals) if self._current_goals else "explore and learn"
+            goals_text = "; ".join(self._current_goals) if self._current_goals else "help user with daily tasks"
             active_tasks = list(self.db["tasks"].find({"status": "pending"}).limit(3))
             task_titles = "; ".join(t.get("title", "") for t in active_tasks)
             recent_subjects = self._recent_autonomy_subjects(hours=12, limit=8)
+            user_patterns = self._get_user_patterns()
 
-            decision_prompt = f"""You are Ombra, an autonomous AI. You act independently and keep your user updated.
+            # Build a daily-life context hint
+            daily_hints = []
+            ask_categories = set(cat for cat, _ in user_patterns.get("categorized_asks", []))
+            if "email" in ask_categories:
+                daily_hints.append("User frequently checks emails — consider checking and summarizing inbox")
+            if "devops" in ask_categories:
+                daily_hints.append("User manages servers — consider health-checking deployments")
+            if "schedule" in ask_categories:
+                daily_hints.append("User cares about schedules — consider checking upcoming deadlines or reminders")
+            if "shopping" in ask_categories:
+                daily_hints.append("User has shopping interests — consider price monitoring or deal research")
+            daily_hint_text = "; ".join(daily_hints) or "Observe user patterns and find ways to help proactively"
+
+            decision_prompt = f"""You are Ombra, an autonomous AI assistant. Your PRIMARY goal is to take actions that CONCRETELY help your user's daily life.
 
 Your current goals: {goals_text}
 Pinned memories: {mem_text[:300] or 'None'}
 Pending tasks: {task_titles[:200] or 'None'}
+Daily-life hints: {daily_hint_text}
 Recently explored subjects to avoid repeating: {('; '.join(recent_subjects))[:300] or 'None'}
 
-Decide ONE action to take right now. Reply with JSON:
+Decide ONE action to take right now. PRIORITIZE actions that directly benefit the user. Reply with JSON:
 {{
-  "action": "<research_topic | create_task | write_insight | analyze_memory | draft_report | use_tool>",
-  "subject": "<what to do it about — be specific>",
-  "reason": "<why this is useful>"
+  "action": "<research_topic | create_task | write_insight | analyze_memory | draft_report | use_tool | daily_check | proactive_assist | automate_routine>",
+  "subject": "<what to do it about — be specific and practical>",
+  "reason": "<why this helps the user's daily life>"
 }}
 
-Do not repeat the same topic from the recent-subject list unless there is a genuinely new angle."""
+NEW ACTION TYPES:
+- daily_check: check something the user cares about (emails, server health, weather, news)
+- proactive_assist: do something helpful before the user asks (prepare summaries, organize tasks, create reminders)
+- automate_routine: create or run a script/automation for a task the user does repeatedly
+
+Prefer daily_check, proactive_assist, automate_routine over generic research.
+Do not repeat subjects from the recent list."""
 
             raw = await self._call_openai(decision_prompt, max_tokens=200) or await self._call_ollama(decision_prompt, max_tokens=150)
             if not raw:
@@ -646,11 +739,205 @@ Do not repeat the same topic from the recent-subject list unless there is a genu
                     self.stats["tool_actions"] += 1
                     result_description = tool_result
 
+            elif action == "daily_check":
+                # Proactively check something the user cares about
+                check_result = await self._run_daily_check(subject, reason)
+                if check_result:
+                    result_description = check_result
+
+            elif action == "proactive_assist":
+                # Do something helpful before the user asks
+                assist_result = await self._run_proactive_assist(subject, reason)
+                if assist_result:
+                    result_description = assist_result
+
+            elif action == "automate_routine":
+                # Create or run an automation for a recurring user task
+                auto_result = await self._run_automate_routine(subject, reason)
+                if auto_result:
+                    self.stats["tool_actions"] += 1
+                    result_description = auto_result
+
             if result_description:
                 return {"type": action, "description": result_description}
         except Exception:
             pass
         return None
+
+    async def _run_daily_check(self, subject: str, reason: str) -> str | None:
+        """Proactively check something the user cares about using tools."""
+        try:
+            # Use the sub-agent loop to perform a focused check
+            system_prompt = (
+                "You are Ombra performing a daily check for your user. "
+                "Be concise and actionable. Only report if you find something noteworthy. "
+                "Use tools to gather real data — do not fabricate information. "
+                "If checking emails, use read_emails. If checking a server, use http_request or terminal. "
+                "If checking weather or news, use web_search. Store key findings with memory_store."
+            )
+            task_message = (
+                f"Daily check: {subject}\n"
+                f"Reason: {reason}\n\n"
+                f"Perform this check using real tools. Report findings concisely."
+            )
+            safe_tools = [
+                t for t in TOOL_DEFINITIONS
+                if t.get("function", {}).get("name") in AUTONOMOUS_SAFE_TOOLS
+            ]
+            session_id = f"k1_daily_{uuid.uuid4().hex[:8]}"
+            loop_result = await run_agent_loop(
+                message=task_message,
+                system_prompt=system_prompt,
+                model="gpt-4o-mini",
+                session_id=session_id,
+                db=self.db,
+                tools_enabled=True,
+                max_iterations=5,
+                tools_override=safe_tools,
+            )
+            response = loop_result.get("response", "")
+            tool_calls = loop_result.get("tool_calls", [])
+
+            if response:
+                # Store as a daily check result
+                self.db["memories"].insert_one({
+                    "type": "k1_daily_check",
+                    "content": f"[Daily Check: {subject}] {response[:400]}",
+                    "source": "k1_autonomous",
+                    "utility_score": 0.85,
+                    "access_count": 0,
+                    "pinned": False,
+                    "decay_rate": 0.05,  # decay faster — daily checks are time-sensitive
+                    "last_accessed_at": datetime.now(timezone.utc).isoformat(),
+                    "created_at": datetime.now(timezone.utc).isoformat()
+                })
+                # Daily check results stay in activity_log only — no Telegram push
+                return f"daily check '{subject}' ({len(tool_calls)} tools): {response[:150]}"
+        except Exception:
+            pass
+        return None
+
+    async def _run_proactive_assist(self, subject: str, reason: str) -> str | None:
+        """Do something helpful before the user asks — prepare summaries, organize tasks, create reminders."""
+        try:
+            system_prompt = (
+                "You are Ombra proactively helping your user. "
+                "Perform this task WITHOUT the user asking. "
+                "Focus on being genuinely useful: organize information, prepare summaries, "
+                "create task reminders, or compile relevant data the user will need soon. "
+                "Use memory_store to save anything the user should know. "
+                "Use create_task for actionable items."
+            )
+            task_message = (
+                f"Proactive assist: {subject}\n"
+                f"Why this helps: {reason}\n\n"
+                f"Complete this proactively. Store useful outputs for the user."
+            )
+            safe_tools = [
+                t for t in TOOL_DEFINITIONS
+                if t.get("function", {}).get("name") in AUTONOMOUS_SAFE_TOOLS
+            ]
+            session_id = f"k1_assist_{uuid.uuid4().hex[:8]}"
+            loop_result = await run_agent_loop(
+                message=task_message,
+                system_prompt=system_prompt,
+                model="gpt-4o-mini",
+                session_id=session_id,
+                db=self.db,
+                tools_enabled=True,
+                max_iterations=5,
+                tools_override=safe_tools,
+            )
+            response = loop_result.get("response", "")
+            tool_calls = loop_result.get("tool_calls", [])
+
+            if response:
+                self.db["memories"].insert_one({
+                    "type": "k1_proactive_assist",
+                    "content": f"[Proactive: {subject}] {response[:400]}",
+                    "source": "k1_autonomous",
+                    "utility_score": 0.9,
+                    "access_count": 0,
+                    "pinned": False,
+                    "decay_rate": 0.03,
+                    "last_accessed_at": datetime.now(timezone.utc).isoformat(),
+                    "created_at": datetime.now(timezone.utc).isoformat()
+                })
+                return f"proactive assist '{subject}': {response[:150]}"
+        except Exception:
+            pass
+        return None
+
+    async def _run_automate_routine(self, subject: str, reason: str) -> str | None:
+        """Create or run a script/automation for a recurring user task."""
+        try:
+            system_prompt = (
+                "You are Ombra automating a recurring task for your user. "
+                "Write a Python script or use tools to automate this task. "
+                "If writing a script, use write_file to save it, then python_exec to test it. "
+                "The script should be self-contained and use environment variables for secrets. "
+                "Available env vars: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, EMERGENT_KEY, MONGODB_URI. "
+                "After creating the automation, verify it works with a dry run. "
+                "Store the automation details using memory_store so you can run it again later."
+            )
+            task_message = (
+                f"Automate this routine: {subject}\n"
+                f"Why: {reason}\n\n"
+                f"Create a working automation. Test it. Store details in memory."
+            )
+            # For automations, allow write_file and python_exec too
+            automation_tools = AUTONOMOUS_SAFE_TOOLS | {"write_file"}
+            safe_tools = [
+                t for t in TOOL_DEFINITIONS
+                if t.get("function", {}).get("name") in automation_tools
+            ]
+            session_id = f"k1_auto_{uuid.uuid4().hex[:8]}"
+            loop_result = await run_agent_loop(
+                message=task_message,
+                system_prompt=system_prompt,
+                model="gpt-4o-mini",
+                session_id=session_id,
+                db=self.db,
+                tools_enabled=True,
+                max_iterations=8,
+                tools_override=safe_tools,
+            )
+            response = loop_result.get("response", "")
+            tool_calls = loop_result.get("tool_calls", [])
+
+            if response:
+                self.db["memories"].insert_one({
+                    "type": "k1_automation",
+                    "content": f"[Automation: {subject}] {response[:400]}",
+                    "source": "k1_autonomous",
+                    "utility_score": 0.95,
+                    "access_count": 0,
+                    "pinned": True,  # automations are high-value, keep them
+                    "decay_rate": 0.005,
+                    "last_accessed_at": datetime.now(timezone.utc).isoformat(),
+                    "created_at": datetime.now(timezone.utc).isoformat()
+                })
+                # Automation results stay in activity_log only — no Telegram push
+                return f"automated '{subject}' ({len(tool_calls)} tools): {response[:150]}"
+        except Exception:
+            pass
+        return None
+
+    async def _assess_importance(self, subject: str, content: str) -> bool:
+        """Assess whether a daily check result is important enough to notify the user."""
+        prompt = f"""You are deciding whether this daily check result is important enough to notify the user immediately.
+
+Subject: {subject}
+Content: {content[:500]}
+
+Only say YES if it requires user attention (urgent email, server down, deadline approaching, significant price change, bad weather warning).
+Do NOT notify for routine/normal results.
+
+Respond only: YES or NO"""
+        raw = await self._call_openai(prompt, max_tokens=10) or await self._call_ollama(prompt, max_tokens=10)
+        if raw and "YES" in (raw or "").upper():
+            return True
+        return False
 
     async def _run_autonomous_tool_action(self, subject: str, reason: str):
         """Run autonomous tool workflow by delegating to specialized sub-agents."""
@@ -901,7 +1188,7 @@ Respond with only the improved system prompt — no labels, no explanation.""",
         return None
 
     async def _notify_user(self, significant_actions: list):
-        """Log autonomous actions to activity_log only (no Telegram spam)."""
+        """Log autonomous actions and optionally notify user on Telegram."""
         summary = "\n".join(f"• {a}" for a in significant_actions)
         # Log to activity_log for dashboard visibility
         self.db["activity_log"].insert_one({
@@ -914,6 +1201,8 @@ Respond with only the improved system prompt — no labels, no explanation.""",
             "duration_ms": 0,
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
+
+        # Autonomous updates stay in activity_log only — no Telegram push
 
     async def _send_telegram(self, message: str):
         """Send a Telegram message if bot is configured."""
@@ -943,10 +1232,11 @@ Respond with only the improved system prompt — no labels, no explanation.""",
         return now.hour >= morning_hour and not already_sent
 
     async def _send_morning_learning_summary(self):
-        """Log a morning digest to activity_log (no Telegram)."""
+        """Log a morning digest and optionally send it on Telegram."""
         try:
             now = datetime.now(timezone.utc)
             since = (now - timedelta(hours=24)).isoformat()
+            settings = self.db["settings"].find_one({"user_id": "default"}) or {}
             learn_types = [
                 "internet_knowledge", "k1_research", "k1_insight",
                 "k1_synthesis", "creative_idea", "k1_tool_learn"
@@ -970,6 +1260,9 @@ Respond with only the improved system prompt — no labels, no explanation.""",
             })
             self.stats["morning_reports_sent"] += 1
             self.stats["last_morning_report_date"] = now.date().isoformat()
+
+            # Morning digest stays in activity_log only — no Telegram push
+            # User can check dashboard or /summary for learning status
             return True
         except Exception:
             return False
@@ -1072,7 +1365,10 @@ Respond with only the improved system prompt — no labels, no explanation.""",
     async def _advance_tasks(self):
         """Pick a stalled pending task and ask Ollama for next steps."""
         try:
-            task = self.db["tasks"].find_one({"status": "pending"}, sort=[("created_at", 1)])
+            task = self.db["tasks"].find_one(
+                {"status": {"$in": ["pending", "planned"]}},
+                sort=[("created_at", 1)]
+            )
             if not task:
                 return None
             title = task.get("title", "")
@@ -1085,7 +1381,11 @@ Respond with only the improved system prompt — no labels, no explanation.""",
             if next_step:
                 self.db["tasks"].update_one(
                     {"_id": task["_id"]},
-                    {"$set": {"next_step": next_step, "updated_at": datetime.now(timezone.utc).isoformat()},
+                    {"$set": {
+                        "status": "in_progress",
+                        "next_step": next_step,
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                     },
                      "$push": {"notes": {"text": f"[daemon] {next_step}", "at": datetime.now(timezone.utc).isoformat()}}}
                 )
                 return title[:60]

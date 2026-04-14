@@ -22,7 +22,7 @@
 - ✓ Virtual environment created: `venv/`
 - ✓ All Python dependencies installed via `pip`
 - ✓ Packages include: FastAPI, Uvicorn, Pydantic, MongoDB, OpenAI, Google Generative AI, and more
-- ⚠ Note: `emergentintegrations==0.1.0` package was unavailable and skipped
+- ℹ Optional package strategy in place: `emergentintegrations==0.1.0` moved to `backend/requirements-optional.txt` to keep full rebuilds stable
 
 ### 4. **Frontend Setup (React)**
 - ⏳ npm dependencies installation in progress
@@ -145,9 +145,10 @@ Common variables to set:
    - Install used `--legacy-peer-deps` for date-fns v4 vs react-day-picker v8 compatibility
    - This is safe but may need version updates in package.json in the future
 
-2. **Missing Package**
-   - `emergentintegrations==0.1.0` - This custom package was not available on PyPI
-   - The application will still run without it unless specifically imported
+2. **Optional Package**
+   - `emergentintegrations==0.1.0` is isolated in `backend/requirements-optional.txt`
+   - Core installs (`pip install -r requirements.txt`) stay green even if this package is unavailable
+   - Install optional dependencies separately when your package index provides them
 
 3. **Ollama Integration**
    - `start_ollama.sh` is available but Ollama server not yet installed
@@ -180,7 +181,8 @@ sudo lsof -i :3000
 # Reinstall backend deps
 cd /home/azureuser/Ombra
 source venv/bin/activate
-pip install -r requirements_modified.txt
+pip install -r backend/requirements.txt
+pip install -r backend/requirements-optional.txt
 
 # Reinstall frontend deps
 cd frontend
