@@ -13,7 +13,7 @@
 [![Node.js 20+](https://img.shields.io/badge/node.js-20+-green.svg)](https://nodejs.org/)
 [![MongoDB](https://img.shields.io/badge/mongodb-7.0-green.svg)](https://www.mongodb.com/)
 
-[Features](#features) • [Quick Start](#quick-start) • [Deployment](#deployment) • [User Guide](#user-guide) • [API Docs](#api-documentation)
+[Features](#features) • [Quick Start](#quick-start) • [Deployment](#deployment) • [User Guide](#user-guide) • [API Docs](#api-documentation) • [Changelog](./CHANGELOG.md)
 
 </div>
 
@@ -30,6 +30,7 @@
 - [User Guide](#user-guide)
 - [Configuration](#configuration)
 - [API Documentation](#api-documentation)
+- [Changelog](./CHANGELOG.md)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
@@ -217,6 +218,9 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
+# Optional providers/features (safe to skip if unavailable)
+pip install -r requirements-optional.txt
+
 # Configure environment
 cp .env.example .env
 nano .env
@@ -230,6 +234,10 @@ EMERGENT_LLM_KEY=your_emergent_key_here
 OLLAMA_URL=http://localhost:11434
 TELEGRAM_BOT_TOKEN=your_telegram_token_here  # Optional
 ```
+
+**Dependency policy note:**
+- `requirements.txt` installs only the stable public dependency set.
+- Optional/private integrations are isolated in `backend/requirements-optional.txt` so fresh environment rebuilds do not fail.
 
 #### 5. Setup Frontend
 ```bash
@@ -798,6 +806,7 @@ ollama list
 ## 🤝 Contributing
 
 Contributions welcome! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
+For compatibility with older references, see [contibution.md](./contibution.md).
 
 ---
 

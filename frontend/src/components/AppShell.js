@@ -17,6 +17,7 @@ const navItems = [
   { path: '/models', icon: Cpu, label: 'Models' },
   { path: '/memories', icon: Brain, label: 'Memories' },
   { path: '/analytics', icon: BarChart3, label: 'Analytics' },
+  { path: '/brain', icon: Brain, label: 'Mind' },
   { path: '/skills', icon: Sparkles, label: 'Skills' },
   { path: '/permissions', icon: Shield, label: 'Permissions' },
   { path: '/drafts', icon: Mail, label: 'Drafts' },

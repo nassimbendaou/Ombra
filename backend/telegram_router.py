@@ -2,7 +2,7 @@
 Ombra Telegram Inbound Command Router
 Full chat parity: agent loop with tools, conversation persistence,
 learning, per-chat session state.
-Supports: /status, /summary, /tasks, /run, /pause, /resume, /cancel,
+Supports: /status, /summary, /tasks, /status_tasks, /run, /pause, /resume, /cancel,
           /tools, /model, /whitecard, /clear, /help, or plain text
 """
 import os
@@ -17,13 +17,153 @@ from urllib.parse import urlparse, parse_qs, unquote
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 MAX_TG_LEN = 4000  # Telegram message limit (we leave margin from 4096)
 
+# ── Media / STT helpers ────────────────────────────────────────────────────────
+
+async def _download_telegram_file(file_id: str) -> bytes | None:
+    """Download a file from Telegram servers by file_id."""
+    if not TELEGRAM_TOKEN:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            info = (await c.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile",
+                                params={"file_id": file_id})).json()
+            fpath = info.get("result", {}).get("file_path")
+            if not fpath:
+                return None
+            resp = await c.get(f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{fpath}")
+            return resp.content if resp.status_code == 200 else None
+    except Exception:
+        return None
+
+
+async def _speech_to_text(audio_bytes: bytes, filename: str = "voice.ogg") -> str:
+    """Transcribe audio bytes via OpenAI Whisper API."""
+    api_key = os.environ.get("EMERGENT_LLM_KEY") or os.environ.get("OPENAI_API_KEY", "")
+    base_url = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
+    if not api_key:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=60) as c:
+            resp = await c.post(
+                f"{base_url}/audio/transcriptions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                data={"model": "whisper-1"},
+                files={"file": (filename, audio_bytes)},
+            )
+            return resp.json().get("text", "")
+    except Exception:
+        return ""
+
+
+async def _text_to_speech(text: str) -> bytes | None:
+    """Convert text to speech via OpenAI TTS API. Returns mp3 bytes or None."""
+    api_key = os.environ.get("EMERGENT_LLM_KEY") or os.environ.get("OPENAI_API_KEY", "")
+    base_url = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
+    if not api_key:
+        return None
+    try:
+        # Truncate to TTS limit
+        snippet = text[:4096]
+        async with httpx.AsyncClient(timeout=60) as c:
+            resp = await c.post(
+                f"{base_url}/audio/speech",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model": "tts-1", "input": snippet, "voice": "onyx"},
+            )
+            if resp.status_code == 200:
+                return resp.content
+    except Exception:
+        pass
+    return None
+
+
+async def send_voice_reply(chat_id, audio_bytes: bytes):
+    """Send a voice message back to Telegram."""
+    if not TELEGRAM_TOKEN or not audio_bytes:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            await c.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVoice",
+                data={"chat_id": str(chat_id)},
+                files={"voice": ("reply.mp3", audio_bytes, "audio/mpeg")},
+            )
+    except Exception:
+        pass
+
+
+async def send_video_reply(chat_id, video_bytes: bytes, caption: str = ""):
+    """Send a video message back to Telegram."""
+    if not TELEGRAM_TOKEN or not video_bytes:
+        return
+    try:
+        data = {"chat_id": str(chat_id)}
+        if caption:
+            data["caption"] = caption[:1024]
+        async with httpx.AsyncClient(timeout=60) as c:
+            await c.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo",
+                data=data,
+                files={"video": ("reply.mp4", video_bytes, "video/mp4")},
+            )
+    except Exception:
+        pass
+
+
+async def _extract_text_from_media(msg: dict) -> tuple[str, str]:
+    """Extract text from a Telegram message (voice/audio/video/video_note/text).
+
+    Returns (transcribed_text, media_type).
+    media_type is one of: 'text', 'voice', 'audio', 'video', 'video_note'.
+    """
+    # Voice message
+    if msg.get("voice"):
+        file_id = msg["voice"].get("file_id")
+        data = await _download_telegram_file(file_id) if file_id else None
+        if data:
+            text = await _speech_to_text(data, "voice.ogg")
+            return (text, "voice") if text else ("", "voice")
+        return ("", "voice")
+
+    # Audio file (mp3, etc.)
+    if msg.get("audio"):
+        file_id = msg["audio"].get("file_id")
+        fname = msg["audio"].get("file_name", "audio.mp3")
+        data = await _download_telegram_file(file_id) if file_id else None
+        if data:
+            text = await _speech_to_text(data, fname)
+            return (text, "audio") if text else ("", "audio")
+        return ("", "audio")
+
+    # Video note (round video)
+    if msg.get("video_note"):
+        file_id = msg["video_note"].get("file_id")
+        data = await _download_telegram_file(file_id) if file_id else None
+        if data:
+            text = await _speech_to_text(data, "video_note.mp4")
+            return (text, "video_note") if text else ("", "video_note")
+        return ("", "video_note")
+
+    # Video message
+    if msg.get("video"):
+        file_id = msg["video"].get("file_id")
+        data = await _download_telegram_file(file_id) if file_id else None
+        if data:
+            text = await _speech_to_text(data, "video.mp4")
+            return (text, "video") if text else ("", "video")
+        return ("", "video")
+
+    # Plain text (caption on media or regular text)
+    text = msg.get("caption") or msg.get("text") or ""
+    return (text, "text")
+
 
 async def get_telegram_updates(offset=0, timeout=5):
     """Get updates from Telegram (long polling)."""
     if not TELEGRAM_TOKEN:
         return []
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-    params = {"offset": offset, "timeout": timeout, "allowed_updates": ["message"]}
+    params = {"offset": offset, "timeout": timeout, "allowed_updates": ["message", "edited_message"]}
     try:
         async with httpx.AsyncClient(timeout=timeout + 10) as client:
             resp = await client.get(url, params=params)
@@ -202,6 +342,8 @@ class TelegramRouter:
             return await self._handle_summary()
         elif command == "tasks":
             return await self._handle_tasks()
+        elif command == "status_tasks":
+            return await self._handle_status_tasks()
         elif command == "run":
             return await self._handle_run(args)
         elif command == "pause":
@@ -267,6 +409,7 @@ class TelegramRouter:
             "/status — system health\n"
             "/summary — daily summary\n"
             "/tasks — active tasks\n"
+            "/status_tasks — status of every task\n"
             "/run <id> — execute task step\n"
             "/pause <id> · /resume <id> · /cancel <id>\n"
             "/help — this message"
@@ -304,6 +447,7 @@ class TelegramRouter:
             "- draft_email: Draft an email for user approval\n"
             "- web_search: Search the internet\n"
             "- fetch_url: Read a web page\n"
+            "- browser_research: Use a real browser for rendered-page research\n"
             "- terminal: Run shell commands\n"
             "- read_file / write_file / list_dir: File operations\n"
             "- python_exec: Run Python code\n"
@@ -315,9 +459,17 @@ class TelegramRouter:
             "1. When asked to do something, USE the tools. Never say 'I don't have access'.\n"
             "2. For emails: use read_emails to check inbox, draft_email to compose.\n"
             "3. For research: use web_search + fetch_url, then summarize findings.\n"
+            "3b. If a site needs JS rendering or interactive navigation, use browser_research.\n"
             "4. Report what you DID, not what you COULD do.\n"
             "5. Be concise in Telegram replies.\n"
             "6. For user notifications from generated scripts, use env vars TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.\n"
+            "\n## Code Quality Rules\n"
+            "When writing code:\n"
+            "1. ALWAYS test your code after writing it. Run it with terminal or python_exec and verify it works.\n"
+            "2. If a command or script fails, read the error, fix the issue, and re-run until it works.\n"
+            "3. Before writing files, read existing files first to understand context.\n"
+            "4. Write complete, working code \u2014 never leave placeholders or TODO comments.\n"
+            "5. If you\u2019re unsure, research first (web_search / fetch_url) before coding.\n"
         )
 
         tool_calls_made = []
@@ -467,6 +619,19 @@ class TelegramRouter:
         from telegram_bot import format_task_list
         return format_task_list(tasks)
 
+    async def _handle_status_tasks(self):
+        tasks = list(self.db["tasks"].find({}).sort("created_at", -1).limit(100))
+        if not tasks:
+            return "No tasks found."
+
+        lines = ["<b>All Task Status</b>"]
+        for t in tasks:
+            tid = str(t.get("_id", ""))[:8]
+            title = (t.get("title") or "Untitled").replace("\n", " ")[:80]
+            status = (t.get("status") or "unknown")
+            lines.append(f"• <code>{tid}</code> [{status}] {title}")
+        return "\n".join(lines)
+
     async def _handle_run(self, args):
         if not args:
             return "Usage: /run <task_id>"
@@ -496,31 +661,49 @@ class TelegramRouter:
                     self.last_update_id = update.get("update_id", self.last_update_id)
                     msg = update.get("message", {})
                     chat_id = msg.get("chat", {}).get("id")
-                    text = msg.get("text", "")
+                    if not chat_id:
+                        continue
 
-                    if chat_id and text:
-                        command, args = parse_command(text)
+                    # Extract text from any format (voice/audio/video/text)
+                    text, media_type = await _extract_text_from_media(msg)
+
+                    if not text:
+                        if media_type != "text":
+                            await send_reply(chat_id, "I received your message but couldn't transcribe the audio. Please try again or send text.")
+                        continue
+
+                    command, args = parse_command(text)
+                    try:
+                        # Prevent silent hangs on long/blocked tool runs.
+                        reply = await asyncio.wait_for(
+                            self.handle_command(chat_id, command, args),
+                            timeout=180
+                        )
+                    except asyncio.TimeoutError:
+                        reply = (
+                            "I am still working on your request and it took too long in one step. "
+                            "Please retry, or ask me to split the task in smaller steps."
+                        )
                         try:
-                            # Prevent silent hangs on long/blocked tool runs.
-                            reply = await asyncio.wait_for(
-                                self.handle_command(chat_id, command, args),
-                                timeout=180
-                            )
-                        except asyncio.TimeoutError:
-                            reply = (
-                                "I am still working on your request and it took too long in one step. "
-                                "Please retry, or ask me to split the task in smaller steps."
-                            )
-                            try:
-                                self.db["activity_log"].insert_one({
-                                    "type": "telegram_poll_timeout",
-                                    "details": {"chat_id": str(chat_id), "command": command},
-                                    "duration_ms": 180000,
-                                    "timestamp": self._now_iso()
-                                })
-                            except Exception:
-                                pass
-                        if reply:
+                            self.db["activity_log"].insert_one({
+                                "type": "telegram_poll_timeout",
+                                "details": {"chat_id": str(chat_id), "command": command},
+                                "duration_ms": 180000,
+                                "timestamp": self._now_iso()
+                            })
+                        except Exception:
+                            pass
+
+                    if reply:
+                        # Respond in same format: voice/audio/video → voice, else text
+                        if media_type in ("voice", "audio", "video_note", "video"):
+                            audio = await _text_to_speech(reply)
+                            if audio:
+                                await send_voice_reply(chat_id, audio)
+                            else:
+                                # Fallback to text if TTS fails
+                                await send_reply(chat_id, reply)
+                        else:
                             await send_reply(chat_id, reply)
             except Exception as e:
                 try:

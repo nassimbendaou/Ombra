@@ -201,6 +201,9 @@ source venv/bin/activate
 # Install dependencies
 pip install --upgrade pip
 pip install -r requirements.txt
+
+# Optional integrations (safe to skip if unavailable in your index)
+pip install -r requirements-optional.txt
 ```
 
 ### 4. Install Frontend Dependencies
@@ -512,6 +515,7 @@ git pull
 cd backend
 source venv/bin/activate
 pip install -r requirements.txt
+pip install -r requirements-optional.txt
 
 # Update frontend
 cd ../frontend
@@ -559,6 +563,7 @@ tail -n 100 /var/log/ombra/backend.err.log
 cd /opt/ombra/backend
 source venv/bin/activate
 pip install -r requirements.txt
+pip install -r requirements-optional.txt
 
 # 2. Port already in use
 sudo lsof -i :8001

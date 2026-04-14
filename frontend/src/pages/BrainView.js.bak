@@ -1,0 +1,488 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  Brain, Zap, Eye, Target, Lightbulb, Cpu, ArrowRight,
+  RefreshCw, ChevronDown, Circle, Loader2, Waves
+} from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Badge } from '../components/ui/badge';
+import { Button } from '../components/ui/button';
+import { getBrainState } from '../lib/api';
+
+/* ── Brain Region Definitions ─────────────────────────────── */
+const BRAIN_REGIONS = {
+  goals:     { label: 'Goals',     color: '#06d6a0', icon: Target,    cx: 50, cy: 22, desc: 'Current objectives & priorities' },
+  reasoning: { label: 'Reasoning', color: '#118ab2', icon: Cpu,       cx: 30, cy: 42, desc: 'Active thought chains & decisions' },
+  memory:    { label: 'Memory',    color: '#ffd166', icon: Lightbulb, cx: 70, cy: 42, desc: 'Stored knowledge & insights' },
+  actions:   { label: 'Actions',   color: '#ef476f', icon: Zap,       cx: 25, cy: 68, desc: 'Recent tool calls & executions' },
+  learning:  { label: 'Learning',  color: '#7209b7', icon: Eye,       cx: 75, cy: 68, desc: 'New discoveries & observations' },
+  planning:  { label: 'Planning',  color: '#f77f00', icon: ArrowRight,cx: 50, cy: 85, desc: 'Upcoming tasks & strategies' },
+};
+
+/* ── Neural Connection Paths ──────────────────────────────── */
+const CONNECTIONS = [
+  ['goals', 'reasoning'], ['goals', 'memory'], ['reasoning', 'actions'],
+  ['reasoning', 'memory'], ['memory', 'learning'], ['actions', 'planning'],
+  ['learning', 'planning'], ['goals', 'planning'], ['reasoning', 'learning'],
+];
+
+/* ── Synapse Particle ─────────────────────────────────────── */
+function SynapseParticle({ x1, y1, x2, y2, delay, active }) {
+  if (!active) return null;
+  return (
+    <motion.circle
+      r="1.5"
+      fill="hsl(var(--primary))"
+      filter="url(#glow)"
+      initial={{ cx: x1, cy: y1, opacity: 0 }}
+      animate={{
+        cx: [x1, x2], cy: [y1, y2], opacity: [0, 1, 1, 0],
+      }}
+      transition={{
+        duration: 2.5, delay, repeat: Infinity, repeatDelay: Math.random() * 3 + 1,
+        ease: 'easeInOut',
+      }}
+    />
+  );
+}
+
+/* ── Brain SVG Visualization ──────────────────────────────── */
+function BrainSVG({ activeRegion, setActiveRegion, regionData, pulsingRegions }) {
+  return (
+    <svg viewBox="0 0 100 100" className="w-full h-full" style={{ filter: 'drop-shadow(0 0 40px hsl(var(--primary) / 0.1))' }}>
+      <defs>
+        <filter id="glow">
+          <feGaussianBlur stdDeviation="1.5" result="blur" />
+          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+        </filter>
+        <filter id="regionGlow">
+          <feGaussianBlur stdDeviation="2" result="blur" />
+          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+        </filter>
+        <radialGradient id="brainBg" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="hsl(var(--primary) / 0.06)" />
+          <stop offset="100%" stopColor="transparent" />
+        </radialGradient>
+      </defs>
+
+      {/* Background brain shape */}
+      <ellipse cx="50" cy="52" rx="38" ry="42" fill="url(#brainBg)" stroke="hsl(var(--border))" strokeWidth="0.3" opacity="0.5" />
+
+      {/* Central fissure */}
+      <path d="M50 12 Q49 30 50 50 Q51 70 50 92" fill="none" stroke="hsl(var(--border))" strokeWidth="0.2" opacity="0.4" strokeDasharray="1 1" />
+
+      {/* Neural connections */}
+      {CONNECTIONS.map(([from, to], i) => {
+        const a = BRAIN_REGIONS[from], b = BRAIN_REGIONS[to];
+        const isActive = activeRegion === from || activeRegion === to;
+        return (
+          <g key={`conn-${i}`}>
+            <line
+              x1={a.cx} y1={a.cy} x2={b.cx} y2={b.cy}
+              stroke={isActive ? 'hsl(var(--primary))' : 'hsl(var(--border))'}
+              strokeWidth={isActive ? '0.4' : '0.15'}
+              opacity={isActive ? 0.7 : 0.25}
+              strokeDasharray={isActive ? 'none' : '0.8 0.8'}
+            />
+            <SynapseParticle
+              x1={a.cx} y1={a.cy} x2={b.cx} y2={b.cy}
+              delay={i * 0.4} active={isActive || pulsingRegions.length > 0}
+            />
+          </g>
+        );
+      })}
+
+      {/* Brain regions */}
+      {Object.entries(BRAIN_REGIONS).map(([key, region]) => {
+        const isActive = activeRegion === key;
+        const isPulsing = pulsingRegions.includes(key);
+        const data = regionData[key];
+        const itemCount = data?.items?.length || 0;
+        const radius = Math.max(4, Math.min(7, 4 + itemCount * 0.4));
+
+        return (
+          <g
+            key={key}
+            onClick={() => setActiveRegion(isActive ? null : key)}
+            style={{ cursor: 'pointer' }}
+          >
+            {/* Pulse ring */}
+            {isPulsing && (
+              <motion.circle
+                cx={region.cx} cy={region.cy} r={radius + 3}
+                fill="none" stroke={region.color}
+                initial={{ opacity: 0.6, r: radius }}
+                animate={{ opacity: 0, r: radius + 6 }}
+                transition={{ duration: 2, repeat: Infinity }}
+              />
+            )}
+
+            {/* Outer glow */}
+            <circle
+              cx={region.cx} cy={region.cy} r={radius + 1.5}
+              fill={region.color}
+              opacity={isActive ? 0.15 : 0.05}
+              filter="url(#regionGlow)"
+            />
+
+            {/* Main circle */}
+            <motion.circle
+              cx={region.cx} cy={region.cy}
+              r={radius}
+              fill={isActive ? region.color : 'hsl(var(--card))'}
+              stroke={region.color}
+              strokeWidth={isActive ? 0.6 : 0.3}
+              initial={false}
+              animate={{
+                r: isActive ? radius + 0.5 : radius,
+                opacity: 1,
+              }}
+              transition={{ type: 'spring', stiffness: 300 }}
+            />
+
+            {/* Label */}
+            <text
+              x={region.cx} y={region.cy + radius + 3.5}
+              textAnchor="middle" fontSize="2.5" fontWeight="600"
+              fill={isActive ? region.color : 'hsl(var(--muted-foreground))'}
+              style={{ fontFamily: 'Space Grotesk, sans-serif' }}
+            >
+              {region.label}
+            </text>
+
+            {/* Item count badge */}
+            {itemCount > 0 && (
+              <>
+                <circle cx={region.cx + radius - 1} cy={region.cy - radius + 1} r="2.2" fill={region.color} />
+                <text
+                  x={region.cx + radius - 1} y={region.cy - radius + 1.8}
+                  textAnchor="middle" fontSize="2" fontWeight="700" fill="#fff"
+                  style={{ fontFamily: 'IBM Plex Mono, monospace' }}
+                >
+                  {itemCount}
+                </text>
+              </>
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+/* ── Thought Stream Item ──────────────────────────────────── */
+function ThoughtItem({ item, index }) {
+  const typeColors = {
+    goal: '#06d6a0', action: '#ef476f', insight: '#ffd166',
+    learning: '#7209b7', plan: '#f77f00', reasoning: '#118ab2',
+    tool: '#ef476f', research: '#118ab2', synthesis: '#ffd166',
+    check: '#06d6a0', automation: '#f77f00', assist: '#7209b7',
+  };
+  const color = typeColors[item.type] || 'hsl(var(--primary))';
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: -20 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ delay: index * 0.05 }}
+      className="flex gap-3 py-3 px-3 rounded-lg hover:bg-card/60 transition-colors group"
+    >
+      <div className="flex flex-col items-center gap-1 min-w-[3px]">
+        <div className="w-2 h-2 rounded-full mt-1.5 shrink-0" style={{ background: color, boxShadow: `0 0 8px ${color}60` }} />
+        <div className="w-[1px] flex-1 opacity-20" style={{ background: color }} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-[10px] font-mono-ombra uppercase tracking-widest opacity-50" style={{ color }}>
+            {item.type}
+          </span>
+          <span className="text-[10px] font-mono-ombra text-muted-foreground/50">
+            {item.time}
+          </span>
+        </div>
+        <p className="text-sm text-foreground/90 leading-relaxed">{item.content}</p>
+        {item.details && (
+          <p className="text-xs text-muted-foreground/60 mt-1 leading-relaxed">{item.details}</p>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
+/* ── Region Detail Panel ──────────────────────────────────── */
+function RegionPanel({ regionKey, data, onClose }) {
+  const region = BRAIN_REGIONS[regionKey];
+  if (!region || !data) return null;
+  const Icon = region.icon;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20, scale: 0.95 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 10, scale: 0.95 }}
+      className="bg-card/90 backdrop-blur-xl border border-border/40 rounded-xl p-5 shadow-2xl"
+    >
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: `${region.color}18`, border: `1px solid ${region.color}30` }}>
+            <Icon size={18} style={{ color: region.color }} />
+          </div>
+          <div>
+            <h3 className="font-semibold text-base" style={{ color: region.color }}>{region.label}</h3>
+            <p className="text-xs text-muted-foreground">{region.desc}</p>
+          </div>
+        </div>
+        <Button variant="ghost" size="sm" onClick={onClose} className="text-muted-foreground hover:text-foreground">
+          <ChevronDown size={16} />
+        </Button>
+      </div>
+
+      {data.summary && (
+        <div className="mb-4 p-3 rounded-lg bg-background/50 border border-border/30">
+          <p className="text-sm text-foreground/80 leading-relaxed">{data.summary}</p>
+        </div>
+      )}
+
+      <div className="space-y-1 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
+        {(data.items || []).map((item, i) => (
+          <ThoughtItem key={i} item={item} index={i} />
+        ))}
+        {(!data.items || data.items.length === 0) && (
+          <p className="text-sm text-muted-foreground/50 italic py-4 text-center">No active thoughts in this region</p>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
+/* ── Thought Stream (Live Feed) ───────────────────────────── */
+function ThoughtStream({ thoughts }) {
+  const streamRef = useRef(null);
+
+  useEffect(() => {
+    if (streamRef.current) {
+      streamRef.current.scrollTop = 0;
+    }
+  }, [thoughts]);
+
+  return (
+    <Card className="bg-card/50 backdrop-blur border-border/30 h-full">
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-2">
+          <Waves size={16} className="text-primary" />
+          <CardTitle className="text-sm font-semibold tracking-wide">Thought Stream</CardTitle>
+          <motion.div
+            animate={{ opacity: [0.3, 1, 0.3] }}
+            transition={{ duration: 2, repeat: Infinity }}
+            className="ml-auto"
+          >
+            <Circle size={6} className="fill-primary text-primary" />
+          </motion.div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div ref={streamRef} className="space-y-0 max-h-[calc(100vh-320px)] overflow-y-auto pr-1 custom-scrollbar">
+          {thoughts.map((item, i) => (
+            <ThoughtItem key={`${item.time}-${i}`} item={item} index={i} />
+          ))}
+          {thoughts.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-12 opacity-40">
+              <Brain size={32} className="mb-3" />
+              <p className="text-sm">Waiting for thoughts...</p>
+            </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/* ── Stats Bar ────────────────────────────────────────────── */
+function StatsBar({ stats }) {
+  const items = [
+    { label: 'Ticks', value: stats.ticks || 0, color: '#118ab2' },
+    { label: 'Actions', value: stats.autonomous_actions || 0, color: '#ef476f' },
+    { label: 'Ideas', value: stats.ideas_generated || 0, color: '#ffd166' },
+    { label: 'Learned', value: stats.internet_learns || 0, color: '#7209b7' },
+    { label: 'Tools', value: stats.tool_actions || 0, color: '#f77f00' },
+    { label: 'Goals', value: stats.goals_set || 0, color: '#06d6a0' },
+  ];
+
+  return (
+    <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+      {items.map((item, i) => (
+        <motion.div
+          key={item.label}
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: i * 0.05 }}
+          className="bg-card/40 border border-border/20 rounded-lg p-2.5 text-center"
+        >
+          <div className="text-lg font-bold font-mono-ombra" style={{ color: item.color }}>
+            {item.value}
+          </div>
+          <div className="text-[10px] text-muted-foreground/60 uppercase tracking-wider">{item.label}</div>
+        </motion.div>
+      ))}
+    </div>
+  );
+}
+
+/* ── Main BrainView Page ──────────────────────────────────── */
+export default function BrainView() {
+  const [brainData, setBrainData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [activeRegion, setActiveRegion] = useState(null);
+  const [pulsingRegions, setPulsingRegions] = useState([]);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const intervalRef = useRef(null);
+
+  const fetchData = useCallback(async () => {
+    try {
+      const data = await getBrainState();
+      setBrainData(data);
+
+      // Determine which regions have new activity (pulsing)
+      const active = [];
+      Object.entries(data.regions || {}).forEach(([key, region]) => {
+        if (region.items && region.items.length > 0) {
+          const latest = region.items[0];
+          if (latest && latest.age_seconds < 120) active.push(key);
+        }
+      });
+      setPulsingRegions(active);
+    } catch (e) {
+      console.error('Failed to fetch brain state:', e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  useEffect(() => {
+    if (autoRefresh) {
+      intervalRef.current = setInterval(fetchData, 15000);
+    }
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [autoRefresh, fetchData]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <motion.div
+          animate={{ rotate: 360 }}
+          transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
+        >
+          <Brain size={48} className="text-primary/40" />
+        </motion.div>
+      </div>
+    );
+  }
+
+  const regionData = brainData?.regions || {};
+  const thoughts = brainData?.thought_stream || [];
+  const stats = brainData?.stats || {};
+  const currentGoals = brainData?.current_goals || [];
+
+  return (
+    <div className="h-full flex flex-col gap-4 p-4 md:p-6 overflow-y-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <Brain size={28} className="text-primary" />
+            <motion.div
+              className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-primary"
+              animate={{ scale: [1, 1.4, 1], opacity: [1, 0.5, 1] }}
+              transition={{ duration: 2, repeat: Infinity }}
+            />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold tracking-tight">Ombra's Mind</h1>
+            <p className="text-xs text-muted-foreground/60">Real-time reasoning & thought visualization</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost" size="sm"
+            onClick={() => setAutoRefresh(!autoRefresh)}
+            className={autoRefresh ? 'text-primary' : 'text-muted-foreground'}
+          >
+            {autoRefresh ? <Loader2 size={14} className="animate-spin mr-1.5" /> : <Circle size={14} className="mr-1.5" />}
+            <span className="text-xs">{autoRefresh ? 'Live' : 'Paused'}</span>
+          </Button>
+          <Button variant="outline" size="sm" onClick={fetchData} className="border-border/40">
+            <RefreshCw size={14} className="mr-1.5" />
+            <span className="text-xs">Refresh</span>
+          </Button>
+        </div>
+      </div>
+
+      {/* Stats Bar */}
+      <StatsBar stats={stats} />
+
+      {/* Current Goals Banner */}
+      {currentGoals.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="bg-card/30 border border-border/20 rounded-lg p-3"
+        >
+          <div className="flex items-center gap-2 mb-2">
+            <Target size={13} className="text-[#06d6a0]" />
+            <span className="text-[10px] font-semibold uppercase tracking-widest text-[#06d6a0]/80">Active Goals</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {currentGoals.map((goal, i) => (
+              <Badge key={i} variant="outline" className="text-xs border-[#06d6a0]/20 text-foreground/70 bg-[#06d6a0]/5">
+                {goal}
+              </Badge>
+            ))}
+          </div>
+        </motion.div>
+      )}
+
+      {/* Main Content: Brain + Stream */}
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-5 gap-4 min-h-0">
+        {/* Brain Visualization */}
+        <div className="lg:col-span-3 flex flex-col gap-4">
+          <Card className="bg-card/30 backdrop-blur border-border/20 flex-1 relative overflow-hidden">
+            <div className="absolute inset-0 bg-gradient-to-b from-primary/[0.02] to-transparent pointer-events-none" />
+            <CardContent className="p-4 h-full flex items-center justify-center">
+              <div className="w-full max-w-[500px] aspect-square">
+                <BrainSVG
+                  activeRegion={activeRegion}
+                  setActiveRegion={setActiveRegion}
+                  regionData={regionData}
+                  pulsingRegions={pulsingRegions}
+                />
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Region Detail Panel */}
+          <AnimatePresence mode="wait">
+            {activeRegion && (
+              <RegionPanel
+                key={activeRegion}
+                regionKey={activeRegion}
+                data={regionData[activeRegion]}
+                onClose={() => setActiveRegion(null)}
+              />
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* Thought Stream */}
+        <div className="lg:col-span-2">
+          <ThoughtStream thoughts={thoughts} />
+        </div>
+      </div>
+    </div>
+  );
+}

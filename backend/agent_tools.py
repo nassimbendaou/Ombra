@@ -11,6 +11,7 @@ Tools:
 - list_dir        : List a directory
 - web_search      : DuckDuckGo search
 - fetch_url       : Fetch and read a URL
+- browser_research: Control a real browser page (navigate/search/click)
 - python_exec     : Execute a Python snippet and return output
 - draft_email     : Draft an email for user review before sending
 - git_run         : Run a git command
@@ -121,6 +122,9 @@ def _is_python_code_blocked(code: str) -> str | None:
 PREVIEWABLE_EXT = {".html", ".htm", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico"}
 APP_ASSET_EXT = {".js", ".css", ".json", ".txt", ".md"}
 PREVIEW_DIRS = [WORK_DIR]
+
+# Track auto-started preview servers so we don't spawn duplicates.
+_PREVIEW_SERVERS: dict[int, int] = {}  # port -> pid
 
 
 def _http_get_text(url: str, headers: dict | None = None, timeout: float = 1.5) -> str | None:
@@ -247,32 +251,79 @@ def _public_api_base() -> str:
     return base
 
 def _make_preview_url(path: str) -> str | None:
-    """Return a preview URL. For asset/code files, resolve to nearest index.html."""
+    """Return a proxy-based preview URL.  Auto-starts a file server on a free port
+    so that multi-file apps (HTML + CSS + JS) resolve relative imports correctly."""
     if not path:
         return None
     real = os.path.realpath(path)
     if not any(real.startswith(d) for d in PREVIEW_DIRS):
         return None
     ext = os.path.splitext(real)[1].lower()
+    if ext not in PREVIEWABLE_EXT and ext not in APP_ASSET_EXT:
+        return None
 
-    # Direct preview for renderable file types
+    # Find the entry HTML file
+    target_html = None
     if ext in PREVIEWABLE_EXT and os.path.isfile(real):
-        return f"{_public_api_base()}/api/preview?path={quote(real)}"
-
-    # If user edited app assets (js/css/etc), try to open app entry point instead
-    if ext in APP_ASSET_EXT:
+        target_html = real
+    elif ext in APP_ASSET_EXT:
         cur = os.path.dirname(real)
-        # Walk up to find nearest index.html under allowed roots
         for _ in range(6):
             idx = os.path.join(cur, "index.html")
             if os.path.isfile(idx):
-                return f"{_public_api_base()}/api/preview?path={quote(os.path.realpath(idx))}"
+                target_html = os.path.realpath(idx)
+                break
             parent = os.path.dirname(cur)
             if parent == cur or not any(parent.startswith(d) for d in PREVIEW_DIRS):
                 break
             cur = parent
+    if not target_html:
+        return None
 
-    return None
+    # Serve from WORK_DIR so relative paths work
+    rel_path = os.path.relpath(target_html, WORK_DIR).replace("\\", "/")
+
+    # Auto-start a static file server if one isn't already running
+    port = _ensure_preview_server()
+    return _proxy_preview_url(port, f"/{rel_path}")
+
+
+def _ensure_preview_server(base_port: int = 9500) -> int:
+    """Ensure a background http.server is running on WORK_DIR. Returns the port."""
+    # Check if an existing server is still alive
+    for port, pid in list(_PREVIEW_SERVERS.items()):
+        try:
+            os.kill(pid, 0)  # Check if process exists
+            return port
+        except OSError:
+            del _PREVIEW_SERVERS[port]
+
+    # Find a free port starting from base_port
+    import socket
+    port = base_port
+    for _ in range(20):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", port))
+                break
+        except OSError:
+            port += 1
+    else:
+        port = base_port  # fallback
+
+    # Start http.server in background
+    try:
+        cmd = f"nohup python3 -m http.server {port} --bind 127.0.0.1 > /dev/null 2>&1 & echo $!"
+        result = subprocess.run(
+            ["/bin/bash", "-c", cmd], capture_output=True, text=True,
+            timeout=5, cwd=WORK_DIR
+        )
+        pid_str = (result.stdout or "").strip().splitlines()[-1] if result.stdout else ""
+        if pid_str.isdigit():
+            _PREVIEW_SERVERS[port] = int(pid_str)
+    except Exception:
+        pass
+    return port
 
 
 def _proxy_preview_url(port: str | int, path: str = "/") -> str:
@@ -291,7 +342,9 @@ def _default_port_from_command(command: str) -> str | None:
     if "npm start" in cmd or "next dev" in cmd or "react-scripts" in cmd:
         return "3000"
     if "python" in cmd and "http.server" in cmd:
-        return "8000"
+        # Parse actual port from command (e.g. python -m http.server 8001 --bind 0.0.0.0)
+        m = re.search(r'http\.server\b[^|;&]*?\b(\d{2,5})\b', cmd)
+        return m.group(1) if m else "8000"
     return None
 
 
@@ -349,9 +402,11 @@ def _detect_server_port(command: str, output: str) -> str | None:
     port_patterns = [
         r'(?:--port|--listen|-p)\s+(\d{2,5})',
         r'(?:localhost|0\.0\.0\.0|127\.0\.0\.1):(\d{2,5})',
-        r'http\.server\s+(\d{2,5})',
+        r'http\.server\b[^|;&]*?\b(\d{2,5})\b',
         r'serve.*-l\s+(\d{2,5})',
         r':(?:port|PORT)\s*=?\s*(\d{2,5})',
+        r'uvicorn\b[^|;&]*?:(\d{2,5})',
+        r'gunicorn\b[^|;&]*?:(\d{2,5})',
     ]
     text = command + "\n" + output
     for pat in port_patterns:
@@ -523,6 +578,23 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "browser_research",
+            "description": "Use a real headless browser for web research and interaction. Can navigate, optionally fill search fields, click selectors, and return rendered text.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL to open"},
+                    "query": {"type": "string", "description": "Optional search phrase to type into detected search input"},
+                    "click_selector": {"type": "string", "description": "Optional CSS selector to click after page load"},
+                    "timeout": {"type": "integer", "description": "Timeout seconds (default 30, max 120)", "default": 30}
+                },
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "python_exec",
             "description": "Execute a Python code snippet and return stdout/stderr. The snippet runs in an isolated subprocess. Use for calculations, data processing, testing code.",
             "parameters": {
@@ -632,6 +704,57 @@ TOOL_DEFINITIONS = [
                 "required": []
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "install_packages",
+            "description": "Install packages using pip, npm, or apt. Use this tool whenever you need to install dependencies for a project. Supports pip (Python), npm (Node.js), and apt (system packages).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "packages": {"type": "string", "description": "Space-separated list of package names to install, e.g. 'flask requests numpy' or 'express react'"},
+                    "manager": {"type": "string", "description": "Package manager: pip, npm, or apt (default: pip)", "default": "pip"},
+                    "cwd": {"type": "string", "description": "Working directory for npm install (default: project workspace)"}
+                },
+                "required": ["packages"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_video",
+            "description": "Generate a short video with text overlay and optional TTS narration. Useful for creating video responses, demos, or explanations. Returns the path to the generated .mp4 file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text to display in the video and narrate via TTS"},
+                    "duration": {"type": "integer", "description": "Video duration in seconds (default: auto from TTS, max 60)", "default": 10},
+                    "title": {"type": "string", "description": "Optional title shown at the top of the video"},
+                    "bg_color": {"type": "string", "description": "Background color hex (default: #1a1a2e)", "default": "#1a1a2e"},
+                    "text_color": {"type": "string", "description": "Text color hex (default: #ffffff)", "default": "#ffffff"}
+                },
+                "required": ["text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "screenshot",
+            "description": "Take a screenshot of any URL (web page, preview link, localhost app) and return it as an image. The screenshot is automatically sent to Telegram. Use this whenever the user asks to 'see' something, wants a screenshot, or asks you to show them what something looks like.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The URL to screenshot. For local apps, use http://127.0.0.1:<port>/<path>"},
+                    "full_page": {"type": "boolean", "description": "Whether to capture the full page (default: false, captures viewport only)", "default": False},
+                    "width": {"type": "integer", "description": "Viewport width in pixels (default: 1280)", "default": 1280},
+                    "height": {"type": "integer", "description": "Viewport height in pixels (default: 720)", "default": 720}
+                },
+                "required": ["url"]
+            }
+        }
     }
 ]
 
@@ -660,6 +783,14 @@ async def execute_tool(name: str, args: dict, db=None) -> dict:
 
         elif name == "fetch_url":
             return await _tool_fetch_url(args.get("url", ""), args.get("max_chars", 8000))
+
+        elif name == "browser_research":
+            return await _tool_browser_research(
+                args.get("url", ""),
+                args.get("query", ""),
+                args.get("click_selector", ""),
+                args.get("timeout", 30),
+            )
 
         elif name == "python_exec":
             return _tool_python_exec(args.get("code", ""), args.get("timeout", 15))
@@ -692,6 +823,25 @@ async def execute_tool(name: str, args: dict, db=None) -> dict:
             return _tool_read_emails(
                 args.get("folder", "INBOX"), args.get("count", 5),
                 args.get("unread_only", False), args.get("search", ""), db
+            )
+
+        elif name == "install_packages":
+            return _tool_install_packages(
+                args.get("packages", ""), args.get("manager", "pip"),
+                args.get("cwd", WORK_DIR)
+            )
+
+        elif name == "generate_video":
+            return await _tool_generate_video(
+                args.get("text", ""), args.get("duration", 10),
+                args.get("title", ""), args.get("bg_color", "#1a1a2e"),
+                args.get("text_color", "#ffffff")
+            )
+
+        elif name == "screenshot":
+            return await _tool_screenshot(
+                args.get("url", ""), args.get("full_page", False),
+                args.get("width", 1280), args.get("height", 720)
             )
 
         else:
@@ -746,6 +896,172 @@ def _tool_terminal(command: str, timeout: int = 30) -> dict:
         return {"success": False, "output": f"Timed out after {timeout}s", "command": command}
     except Exception as e:
         return {"success": False, "output": str(e), "command": command}
+
+
+def _tool_install_packages(packages: str, manager: str = "pip", cwd: str = WORK_DIR) -> dict:
+    """Install packages via pip, npm, or apt."""
+    if not packages.strip():
+        return {"success": False, "output": "No packages specified"}
+    manager = (manager or "pip").lower().strip()
+    if manager not in ("pip", "npm", "apt"):
+        return {"success": False, "output": f"Unsupported package manager: {manager}. Use pip, npm, or apt."}
+    # Sanitize: only allow alphanumeric, hyphens, underscores, dots, @, /, =, >, < in package names
+    pkg_list = packages.strip().split()
+    for pkg in pkg_list:
+        if not re.match(r'^[a-zA-Z0-9@_./><=~\[\]-]+$', pkg):
+            return {"success": False, "output": f"Invalid package name: {pkg}"}
+    safe_pkgs = " ".join(pkg_list)
+    if manager == "pip":
+        cmd = f"pip install {safe_pkgs}"
+    elif manager == "npm":
+        cmd = f"npm install {safe_pkgs}"
+    else:
+        cmd = f"sudo apt-get install -y {safe_pkgs}"
+    timeout = 120
+    safe_env = {k: v for k, v in os.environ.items()
+                if not any(s in k.upper() for s in ["KEY", "SECRET", "PASSWORD", "TOKEN", "PASS"])}
+    work_dir = cwd if cwd and os.path.isdir(cwd) else WORK_DIR
+    try:
+        result = subprocess.run(
+            ["/bin/bash", "-lc", cmd], shell=False, capture_output=True, text=True,
+            timeout=timeout, cwd=work_dir, env=safe_env
+        )
+        out = (result.stdout or "") + ("" if not result.stderr else f"\nSTDERR:\n{result.stderr}")
+        return {
+            "success": result.returncode == 0,
+            "output": _truncate(out, 4000) or "(no output)",
+            "command": cmd,
+            "packages": pkg_list,
+            "manager": manager,
+        }
+    except subprocess.TimeoutExpired:
+        return {"success": False, "output": f"Package install timed out after {timeout}s", "command": cmd}
+    except Exception as e:
+        return {"success": False, "output": str(e), "command": cmd}
+
+
+async def _tool_generate_video(text: str, duration: int = 10, title: str = "",
+                                bg_color: str = "#1a1a2e", text_color: str = "#ffffff") -> dict:
+    """Generate a video with text overlay and TTS narration using ffmpeg."""
+    if not text.strip():
+        return {"success": False, "output": "No text provided"}
+    duration = min(max(int(duration), 2), 60)
+    timestamp = int(time.time())
+    video_path = os.path.join(WORK_DIR, f"video_{timestamp}.mp4")
+    audio_path = os.path.join(WORK_DIR, f"audio_{timestamp}.mp3")
+    has_audio = False
+
+    # Try TTS for narration
+    api_key = os.environ.get("EMERGENT_LLM_KEY") or os.environ.get("OPENAI_API_KEY", "")
+    base_url = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
+    if api_key:
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=60) as c:
+                resp = await c.post(
+                    f"{base_url}/audio/speech",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={"model": "tts-1", "input": text[:4096], "voice": "onyx"},
+                )
+                if resp.status_code == 200 and resp.content:
+                    with open(audio_path, "wb") as f:
+                        f.write(resp.content)
+                    has_audio = True
+                    # Get audio duration to match video length
+                    probe = subprocess.run(
+                        ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                         "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    if probe.returncode == 0 and probe.stdout.strip():
+                        duration = max(int(float(probe.stdout.strip())) + 1, duration)
+        except Exception:
+            pass
+
+    # Escape text for ffmpeg drawtext
+    safe_text = text.replace("'", "\u2019").replace("\\", "\\\\").replace(":", "\\:")
+    safe_title = (title or "").replace("'", "\u2019").replace("\\", "\\\\").replace(":", "\\:")
+
+    # Build ffmpeg filter for text overlay
+    filters = []
+    # Wrap text at ~40 chars per line
+    import textwrap
+    wrapped = textwrap.fill(safe_text, width=45)
+    wrapped_escaped = wrapped.replace("\n", "\\n")
+
+    drawtext_body = (
+        f"drawtext=text='{wrapped_escaped}':"
+        f"fontcolor={text_color}:fontsize=28:x=(w-text_w)/2:y=(h-text_h)/2:"
+        f"font=monospace"
+    )
+    filters.append(drawtext_body)
+
+    if safe_title:
+        drawtext_title = (
+            f"drawtext=text='{safe_title}':"
+            f"fontcolor={text_color}:fontsize=36:x=(w-text_w)/2:y=60:"
+            f"font=monospace"
+        )
+        filters.append(drawtext_title)
+
+    filter_str = ",".join(filters)
+
+    # Build ffmpeg command
+    cmd_parts = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"color=c={bg_color}:s=720x480:d={duration}:r=24",
+    ]
+    if has_audio:
+        cmd_parts.extend(["-i", audio_path])
+    cmd_parts.extend([
+        "-vf", filter_str,
+        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+        "-pix_fmt", "yuv420p",
+    ])
+    if has_audio:
+        cmd_parts.extend(["-c:a", "aac", "-b:a", "128k", "-shortest"])
+    else:
+        cmd_parts.extend(["-an"])
+    cmd_parts.append(video_path)
+
+    try:
+        result = subprocess.run(cmd_parts, capture_output=True, text=True, timeout=60, cwd=WORK_DIR)
+        # Cleanup temp audio
+        if os.path.exists(audio_path):
+            os.remove(audio_path)
+        if result.returncode != 0:
+            return {"success": False, "output": f"ffmpeg failed: {(result.stderr or '')[:500]}"}
+        if not os.path.exists(video_path):
+            return {"success": False, "output": "Video file was not created"}
+        size = os.path.getsize(video_path)
+        # Also send to Telegram if possible
+        tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+        tg_chat = _resolve_telegram_chat_id()
+        if tg_token and tg_chat:
+            try:
+                import httpx
+                with open(video_path, "rb") as vf:
+                    video_bytes = vf.read()
+                async with httpx.AsyncClient(timeout=60) as c:
+                    caption = title or text[:200]
+                    await c.post(
+                        f"https://api.telegram.org/bot{tg_token}/sendVideo",
+                        data={"chat_id": str(tg_chat), "caption": caption[:1024]},
+                        files={"video": ("response.mp4", video_bytes, "video/mp4")},
+                    )
+            except Exception:
+                pass
+        return {
+            "success": True,
+            "output": f"Video generated: {video_path} ({size} bytes, {duration}s)",
+            "path": video_path,
+            "duration": duration,
+            "has_audio": has_audio,
+        }
+    except subprocess.TimeoutExpired:
+        return {"success": False, "output": "Video generation timed out"}
+    except Exception as e:
+        return {"success": False, "output": f"Video generation error: {str(e)}"}
 
 
 def _tool_read_file(path: str) -> dict:
@@ -875,6 +1191,141 @@ async def _tool_fetch_url(url: str, max_chars: int = 8000) -> dict:
         return {"success": True, "output": _truncate(text, max_chars), "url": url, "status": resp.status_code}
     except Exception as e:
         return {"success": False, "output": f"Fetch failed: {e}", "url": url}
+
+
+async def _tool_browser_research(url: str, query: str = "", click_selector: str = "", timeout: int = 30) -> dict:
+    """Control a real browser page (Playwright) for rendered-web research."""
+    if not url:
+        return {"success": False, "output": "URL is required"}
+    if not re.match(r"^https?://", url.strip(), re.IGNORECASE):
+        return {"success": False, "output": "URL must start with http:// or https://", "url": url}
+
+    try:
+        from playwright.async_api import async_playwright
+    except Exception:
+        return {
+            "success": False,
+            "output": "Playwright is not installed/configured. Install with: pip install playwright && playwright install chromium"
+        }
+
+    timeout = max(5, min(int(timeout), 120))
+    screenshot_path = os.path.join(WORK_DIR, f"browser_capture_{int(time.time())}.png")
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+            page = await browser.new_page()
+            await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+
+            if query:
+                # Heuristic search-box fill for most sites/search engines.
+                search_box = await page.query_selector("input[type='search'], input[name='q'], input[type='text']")
+                if search_box:
+                    await search_box.fill(query)
+                    await search_box.press("Enter")
+                    await page.wait_for_load_state("domcontentloaded", timeout=timeout * 1000)
+
+            if click_selector:
+                target = await page.query_selector(click_selector)
+                if target:
+                    await target.click()
+                    await page.wait_for_load_state("domcontentloaded", timeout=timeout * 1000)
+
+            title = await page.title()
+            final_url = page.url
+            body_text = await page.inner_text("body")
+            await page.screenshot(path=screenshot_path, full_page=True)
+            await browser.close()
+
+        preview = _make_preview_url(screenshot_path)
+        output = (
+            f"Title: {title}\n"
+            f"URL: {final_url}\n\n"
+            f"Rendered text excerpt:\n{_truncate(body_text, 4000)}"
+        )
+        result = {
+            "success": True,
+            "output": output,
+            "title": title,
+            "url": final_url,
+            "screenshot_path": screenshot_path,
+        }
+        if preview:
+            result["preview_url"] = preview
+            result["output"] += f"\n\nScreenshot preview: {preview}"
+        return result
+    except Exception as e:
+        return {"success": False, "output": f"Browser research failed: {str(e)}", "url": url}
+
+
+async def _tool_screenshot(url: str, full_page: bool = False, width: int = 1280, height: int = 720) -> dict:
+    """Take a screenshot of a URL and optionally send it to Telegram."""
+    if not url:
+        return {"success": False, "output": "URL is required"}
+    # Allow localhost URLs for local previews
+    if not re.match(r"^https?://", url.strip(), re.IGNORECASE):
+        # If it looks like a relative path, build a localhost URL
+        if url.startswith("/"):
+            url = f"http://127.0.0.1:8001{url}"
+        else:
+            return {"success": False, "output": "URL must start with http:// or https://"}
+
+    try:
+        from playwright.async_api import async_playwright
+    except Exception:
+        return {"success": False, "output": "Playwright is not installed. Run: pip install playwright && playwright install chromium"}
+
+    width = max(320, min(int(width), 1920))
+    height = max(240, min(int(height), 1080))
+    screenshot_path = os.path.join(WORK_DIR, f"screenshot_{int(time.time())}.png")
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+            page = await browser.new_page(viewport={"width": width, "height": height})
+            await page.goto(url, wait_until="networkidle", timeout=30000)
+            # Small delay to let animations/rendering finish
+            await page.wait_for_timeout(1000)
+            await page.screenshot(path=screenshot_path, full_page=full_page)
+            title = await page.title()
+            await browser.close()
+
+        if not os.path.isfile(screenshot_path):
+            return {"success": False, "output": "Screenshot file was not created"}
+
+        size = os.path.getsize(screenshot_path)
+        preview = _make_preview_url(screenshot_path)
+
+        # Auto-send to Telegram
+        tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+        tg_chat = _resolve_telegram_chat_id()
+        if tg_token and tg_chat:
+            try:
+                import httpx
+                with open(screenshot_path, "rb") as f:
+                    img_bytes = f.read()
+                async with httpx.AsyncClient(timeout=30) as c:
+                    await c.post(
+                        f"https://api.telegram.org/bot{tg_token}/sendPhoto",
+                        data={"chat_id": str(tg_chat), "caption": f"Screenshot: {title or url}"[:1024]},
+                        files={"photo": ("screenshot.png", img_bytes, "image/png")},
+                    )
+            except Exception:
+                pass
+
+        result = {
+            "success": True,
+            "output": f"Screenshot taken: {screenshot_path} ({size} bytes, {width}x{height})",
+            "path": screenshot_path,
+            "title": title,
+            "url": url,
+        }
+        if preview:
+            result["preview_url"] = preview
+            result["output"] += f"\nPreview: {preview}"
+        return result
+    except Exception as e:
+        return {"success": False, "output": f"Screenshot failed: {str(e)}", "url": url}
 
 
 def _tool_python_exec(code: str, timeout: int = 15) -> dict:

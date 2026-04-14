@@ -1,0 +1,8 @@
+# Optional dependencies that are not required for core Ombra operation.
+# Install these only if your environment can resolve them.
+#
+# Example:
+#   pip install -r requirements-optional.txt
+#
+# This package may be private/internal and can be unavailable on public PyPI.
+emergentintegrations==0.1.0

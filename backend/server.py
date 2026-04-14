@@ -168,7 +168,7 @@ def calculate_cost(input_tokens: int, output_tokens: int, model: str) -> float:
     return (input_tokens * rates["input"] + output_tokens * rates["output"]) / 1_000_000
 
 
-def prune_conversation(turns: list, max_tokens: int = 3000) -> list:
+def prune_conversation(turns: list, max_tokens: int = 12000) -> list:
     """
     Trim oldest turns until total estimated tokens is under max_tokens.
     Always keeps the first turn (context) and last 2 turns.
@@ -199,11 +199,13 @@ def prune_conversation(turns: list, max_tokens: int = 3000) -> list:
 # Create indexes
 try:
     memories_col.create_index([("content", TEXT)])
+    memories_col.create_index([("type", 1), ("created_at", DESCENDING)])
     activity_col.create_index([("timestamp", DESCENDING)])
-    activity_col.create_index([("type", 1)])
+    activity_col.create_index([("type", 1), ("timestamp", DESCENDING)])
     conversations_col.create_index([("session_id", 1)])
     agents_col.create_index([("agent_id", 1)], unique=True)
     feedback_col.create_index([("timestamp", DESCENDING)])
+    tasks_col.create_index([("status", 1), ("created_at", DESCENDING)])
 except Exception:
     pass
 
@@ -1255,8 +1257,8 @@ async def chat_stream_endpoint(req: ChatRequest):
     conversation = conversations_col.find_one({"session_id": session_id})
     context = ""
     if conversation:
-        recent_turns = [t for t in conversation.get("turns", [])[-6:] if not t.get("compacted")]
-        context = "\n".join([f"{t['role']}: {t['content'][:200]}" for t in recent_turns])
+        recent_turns = [t for t in conversation.get("turns", [])[-12:] if not t.get("compacted")]
+        context = "\n".join([f"{t['role']}: {t['content'][:500]}" for t in recent_turns])
 
     state = _session_state.get(session_id, {})
     thinking_level = state.get("thinking_level", "low")
@@ -1313,10 +1315,35 @@ async def chat_stream_endpoint(req: ChatRequest):
             soul = load_soul() or ""
             tools_hint = (
                 "\n\nYou have tools available and should USE them when the user asks you to do something. "
-                "Available: read_emails, draft_email, web_search, fetch_url, terminal, read_file, "
-                "write_file, list_dir, python_exec, memory_store, create_task, http_request, git_run. "
+                "Available: read_emails, draft_email, web_search, fetch_url, browser_research, terminal, read_file, "
+                "write_file, list_dir, python_exec, memory_store, create_task, http_request, git_run, install_packages, generate_video, screenshot. "
                 "Execute tasks — don't just describe what you would do. "
+                "Use install_packages to install dependencies (pip, npm, or apt) whenever a project needs them. "
                 "For notifications from generated scripts, use TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars."
+                "\n\n## Environment Awareness (CRITICAL)\n"
+                "You are running on a HEADLESS Linux server. There is NO desktop, NO GUI, NO display.\n"
+                "- You CANNOT open VS Code, browsers, file managers, or any GUI app.\n"
+                "- You CANNOT use xdg-open, xdotool, import (ImageMagick), or display commands.\n"
+                "- To show something visual: use the `screenshot` tool to capture a URL as an image.\n"
+                "- To let the user see a web page: start an HTTP server and give a proxy preview link.\n"
+                "- Your workspace is /tmp/ombra_workspace. All files you create go there. You CAN read/write files there freely.\n"
+                "- NEVER say 'I cannot access files' or 'restrictions prevent me' if the file is in your workspace. Just read it.\n"
+                "\n\n## Preview / Serving Rules (MANDATORY)\n"
+                "When you create HTML/CSS/JS files that the user wants to preview:\n"
+                "1. ALWAYS start a local HTTP server: `python3 -m http.server <PORT> --bind 127.0.0.1` (pick a port like 8080, 8090, etc.)\n"
+                "2. The preview URL is ALWAYS: http://20.67.232.113/api/preview/proxy/<PORT>/<relative-path-from-workspace>\n"
+                "3. NEVER give raw file paths or /api/preview?path= links — they break relative imports.\n"
+                "4. NEVER give http://20.67.232.113:<PORT> links — the user can't reach internal ports directly.\n"
+                "5. If the server command times out, that's NORMAL (it becomes a background process). The preview URL still works.\n"
+                "6. ALWAYS test the preview URL yourself with fetch_url before sharing it.\n"
+                "\n\n## Code-Quality Rules (MANDATORY)\n"
+                "1. After writing or editing ANY file, always read it back to verify syntax.\n"
+                "2. After writing a Python script, run `python -c \"import py_compile; py_compile.compile('<file>', doraise=True)\"` to catch syntax errors.\n"
+                "3. If you create a script meant to run continuously, test it with a short dry-run (e.g., run for 5 seconds then exit) before telling the user it is done.\n"
+                "4. Never leave placeholder values like `YOUR_API_KEY` — pull real values from env vars.\n"
+                "5. When a tool call fails, read the error, fix the root cause, and retry — do NOT repeat the same call blindly.\n"
+                "6. Limit yourself to 3 retry attempts per tool call; after that, report the failure to the user.\n"
+                "7. For any non-trivial code, write at least one quick validation test before considering the task complete."
             )
             extra_ctx = []
             if context:
@@ -1426,8 +1453,8 @@ async def chat_endpoint(req: ChatRequest):
     conversation = conversations_col.find_one({"session_id": session_id})
     context = ""
     if conversation:
-        recent_turns = conversation.get("turns", [])[-6:]
-        context = "\n".join([f"{t['role']}: {t['content'][:200]}" for t in recent_turns])
+        recent_turns = [t for t in conversation.get("turns", [])[-12:] if not t.get("compacted")]
+        context = "\n".join([f"{t['role']}: {t['content'][:500]}" for t in recent_turns])
 
     system_addition = ""
     if req.white_card_mode:
@@ -1458,10 +1485,35 @@ async def chat_endpoint(req: ChatRequest):
         soul = load_soul() or ""
         tools_hint = (
             "\n\nYou have tools available and should USE them when the user asks you to do something. "
-            "Available: read_emails, draft_email, web_search, fetch_url, terminal, read_file, "
-            "write_file, list_dir, python_exec, memory_store, create_task, http_request, git_run. "
+            "Available: read_emails, draft_email, web_search, fetch_url, browser_research, terminal, read_file, "
+            "write_file, list_dir, python_exec, memory_store, create_task, http_request, git_run, install_packages, generate_video, screenshot. "
             "Execute tasks — don't just describe what you would do. "
+            "Use install_packages to install dependencies (pip, npm, or apt) whenever a project needs them. "
             "For notifications from generated scripts, use TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars."
+            "\n\n## Environment Awareness (CRITICAL)\n"
+            "You are running on a HEADLESS Linux server. There is NO desktop, NO GUI, NO display.\n"
+            "- You CANNOT open VS Code, browsers, file managers, or any GUI app.\n"
+            "- You CANNOT use xdg-open, xdotool, import (ImageMagick), or display commands.\n"
+            "- To show something visual: use the `screenshot` tool to capture a URL as an image.\n"
+            "- To let the user see a web page: start an HTTP server and give a proxy preview link.\n"
+            "- Your workspace is /tmp/ombra_workspace. All files you create go there. You CAN read/write files there freely.\n"
+            "- NEVER say 'I cannot access files' or 'restrictions prevent me' if the file is in your workspace. Just read it.\n"
+            "\n\n## Preview / Serving Rules (MANDATORY)\n"
+            "When you create HTML/CSS/JS files that the user wants to preview:\n"
+            "1. ALWAYS start a local HTTP server: `python3 -m http.server <PORT> --bind 127.0.0.1` (pick a port like 8080, 8090, etc.)\n"
+            "2. The preview URL is ALWAYS: http://20.67.232.113/api/preview/proxy/<PORT>/<relative-path-from-workspace>\n"
+            "3. NEVER give raw file paths or /api/preview?path= links — they break relative imports.\n"
+            "4. NEVER give http://20.67.232.113:<PORT> links — the user can't reach internal ports directly.\n"
+            "5. If the server command times out, that's NORMAL (it becomes a background process). The preview URL still works.\n"
+            "6. ALWAYS test the preview URL yourself with fetch_url before sharing it.\n"
+            "\n\n## Code-Quality Rules (MANDATORY)\n"
+            "1. After writing or editing ANY file, always read it back to verify syntax.\n"
+            "2. After writing a Python script, run `python -c \"import py_compile; py_compile.compile('<file>', doraise=True)\"` to catch syntax errors.\n"
+            "3. If you create a script meant to run continuously, test it with a short dry-run (e.g., run for 5 seconds then exit) before telling the user it is done.\n"
+            "4. Never leave placeholder values like `YOUR_API_KEY` — pull real values from env vars.\n"
+            "5. When a tool call fails, read the error, fix the root cause, and retry — do NOT repeat the same call blindly.\n"
+            "6. Limit yourself to 3 retry attempts per tool call; after that, report the failure to the user.\n"
+            "7. For any non-trivial code, write at least one quick validation test before considering the task complete."
         )
         extra_ctx = []
         if context:
@@ -2126,19 +2178,81 @@ async def _preview_proxy_impl(port: int, path: str = "/"):
         raise HTTPException(400, f"Port {port} not in allowed range (3000-9998)")
     clean_path = "/" + (path or "").lstrip("/")
     target = f"http://127.0.0.1:{port}{clean_path}"
+    from starlette.responses import Response, HTMLResponse
+
+    # Retry up to 3 times with short delays — server may still be starting
+    last_error = None
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=12) as client:
+                resp = await client.get(target, follow_redirects=True)
+            content_type = resp.headers.get("content-type", "text/html")
+
+            # For HTML documents, rewrite root-absolute links to remain inside proxy.
+            if "text/html" in content_type.lower():
+                text = resp.text
+                text = _rewrite_html_for_proxy(text, port)
+                return Response(content=text, status_code=resp.status_code, media_type="text/html")
+
+            return Response(content=resp.content, status_code=resp.status_code, media_type=content_type)
+        except httpx.ConnectError as e:
+            last_error = e
+            if attempt < 2:
+                await asyncio.sleep(2)  # wait for server to start
+                continue
+        except Exception as e:
+            last_error = e
+            break
+
+    # Friendly HTML error page instead of raw JSON
+    proxy_base = f"/api/preview/proxy/{port}"
+    error_html = f"""<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8"><title>Preview Unavailable</title>
+<meta http-equiv="refresh" content="5;url={proxy_base}{clean_path}">
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:'Space Grotesk',system-ui,sans-serif;background:#0d1117;color:#c9d1d9;
+display:flex;align-items:center;justify-content:center;min-height:100vh}}
+.card{{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:48px;
+max-width:480px;text-align:center}}
+h1{{font-size:20px;margin-bottom:12px;color:#f0f6fc}}
+p{{font-size:14px;line-height:1.6;color:#8b949e;margin-bottom:8px}}
+.port{{color:#58a6ff;font-family:'IBM Plex Mono',monospace}}
+.hint{{font-size:12px;color:#484f58;margin-top:16px}}
+.retry{{display:inline-block;margin-top:16px;padding:8px 20px;background:#21262d;
+border:1px solid #30363d;border-radius:8px;color:#58a6ff;text-decoration:none;font-size:13px}}
+.retry:hover{{background:#30363d}}
+.spinner{{display:inline-block;width:20px;height:20px;border:2px solid #30363d;
+border-top-color:#58a6ff;border-radius:50%;animation:spin 1s linear infinite;margin-bottom:16px}}
+@keyframes spin{{to{{transform:rotate(360deg)}}}}
+</style></head><body><div class="card">
+<div class="spinner"></div>
+<h1>Waiting for server on port <span class="port">{port}</span></h1>
+<p>The preview server isn't responding yet. This usually means it's still starting up.</p>
+<p class="hint">This page will auto-retry in 5 seconds.</p>
+<a class="retry" href="{proxy_base}{clean_path}">Retry Now</a>
+</div></body></html>"""
+    return HTMLResponse(content=error_html, status_code=503)
+
+
+@app.api_route("/api/preview/proxy/{port}/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
+async def preview_proxy_path(port: int, full_path: str, request: Request):
+    """Preferred route: /api/preview/proxy/8000/index.html — supports all HTTP methods."""
+    if request.method == "GET":
+        return await _preview_proxy_impl(port, f"/{full_path}")
+    # Forward non-GET requests to local server
+    if port not in PROXY_ALLOWED_PORTS:
+        raise HTTPException(400, f"Port {port} not in allowed range (3000-9998)")
+    clean_path = "/" + full_path.lstrip("/")
+    target = f"http://127.0.0.1:{port}{clean_path}"
+    from starlette.responses import Response
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(target, follow_redirects=True)
-        content_type = resp.headers.get("content-type", "text/html")
-        from starlette.responses import Response
-
-        # For HTML documents, rewrite root-absolute links to remain inside proxy.
-        if "text/html" in content_type.lower():
-            text = resp.text
-            text = _rewrite_html_for_proxy(text, port)
-            return Response(content=text, status_code=resp.status_code, media_type="text/html")
-
-        return Response(content=resp.content, status_code=resp.status_code, media_type=content_type)
+        body = await request.body()
+        headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")}
+        async with httpx.AsyncClient(timeout=12) as client:
+            resp = await client.request(request.method, target, content=body, headers=headers, follow_redirects=True)
+        return Response(content=resp.content, status_code=resp.status_code, media_type=resp.headers.get("content-type", "application/octet-stream"))
     except httpx.ConnectError:
         raise HTTPException(502, f"Cannot connect to local server on port {port}")
     except Exception as e:
@@ -2149,12 +2263,6 @@ async def _preview_proxy_impl(port: int, path: str = "/"):
 async def preview_proxy_query(port: int = Query(...), path: str = Query("/")):
     """Back-compat query route: /api/preview/proxy?port=8000&path=/index.html"""
     return await _preview_proxy_impl(port, path)
-
-
-@app.get("/api/preview/proxy/{port}/{full_path:path}")
-async def preview_proxy_path(port: int, full_path: str):
-    """Preferred route: /api/preview/proxy/8000/index.html"""
-    return await _preview_proxy_impl(port, f"/{full_path}")
 
 
 # ============================================================
@@ -2941,6 +3049,172 @@ async def force_tick():
         result = await autonomy_daemon.tick()
         return {"status": "ticked", "result": result}
     return {"status": "not_running"}
+
+
+# ============================================================
+# BRAIN STATE (reasoning visualization)
+# ============================================================
+@app.get("/api/brain/state")
+async def get_brain_state():
+    """Aggregate reasoning data for the Brain View visualization."""
+    now = datetime.now(timezone.utc)
+    since_2h = (now - timedelta(hours=2)).isoformat()
+    since_24h = (now - timedelta(hours=24)).isoformat()
+
+    def _age(ts_str):
+        try:
+            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            return int((now - ts).total_seconds())
+        except Exception:
+            return 9999
+
+    def _time_label(ts_str):
+        try:
+            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            delta = now - ts
+            if delta.total_seconds() < 60:
+                return "just now"
+            if delta.total_seconds() < 3600:
+                return f"{int(delta.total_seconds() / 60)}m ago"
+            return f"{int(delta.total_seconds() / 3600)}h ago"
+        except Exception:
+            return ""
+
+    # ── Goals region ───────────────────────────────────────
+    goal_mems = list(db["memories"].find(
+        {"type": "k1_goals", "created_at": {"$gte": since_24h}}
+    ).sort("created_at", -1).limit(5))
+    goals_items = []
+    current_goals = []
+    for m in goal_mems:
+        content = m.get("content", "")
+        ts = m.get("created_at", "")
+        goals_items.append({
+            "type": "goal", "content": content.replace("K1 Goals: ", ""),
+            "time": _time_label(ts), "age_seconds": _age(ts)
+        })
+        if not current_goals:
+            current_goals = [g.strip() for g in content.replace("K1 Goals: ", "").split("|") if g.strip()]
+
+    # ── Reasoning region ───────────────────────────────────
+    reasoning_logs = list(db["activity_log"].find({
+        "type": {"$in": ["k1_subagent_delegated", "k1_subagent_completed", "k1_tool_attempt"]},
+        "timestamp": {"$gte": since_2h}
+    }).sort("timestamp", -1).limit(15))
+    reasoning_items = []
+    for log in reasoning_logs:
+        d = log.get("details", {})
+        ts = log.get("timestamp", "")
+        lt = log.get("type", "")
+        if lt == "k1_subagent_delegated":
+            reasoning_items.append({
+                "type": "reasoning",
+                "content": f"Delegated to {d.get('agent_name', '?')}: {d.get('subject', '')}",
+                "details": d.get("reason", ""),
+                "time": _time_label(ts), "age_seconds": _age(ts)
+            })
+        elif lt == "k1_subagent_completed":
+            reasoning_items.append({
+                "type": "reasoning",
+                "content": f"Completed: {d.get('response_preview', '')[:120]}",
+                "details": f"Verified: {d.get('verified', '?')} — {d.get('verify_note', '')}",
+                "time": _time_label(ts), "age_seconds": _age(ts)
+            })
+        elif lt == "k1_tool_attempt":
+            reasoning_items.append({
+                "type": "tool",
+                "content": f"{d.get('tool', '?')}({', '.join(f'{k}={v}' for k, v in list((d.get('args') or {}).items())[:2])})",
+                "details": d.get("output_preview", "")[:100],
+                "time": _time_label(ts), "age_seconds": _age(ts)
+            })
+
+    # ── Memory region ──────────────────────────────────────
+    recent_mems = list(db["memories"].find({
+        "type": {"$in": ["k1_research", "k1_insight", "k1_synthesis", "k1_tool_learn"]},
+        "created_at": {"$gte": since_24h}
+    }).sort("created_at", -1).limit(10))
+    memory_items = [{
+        "type": "insight" if "insight" in m.get("type", "") else "research" if "research" in m.get("type", "") else "synthesis",
+        "content": m.get("content", "")[:200],
+        "time": _time_label(m.get("created_at", "")),
+        "age_seconds": _age(m.get("created_at", ""))
+    } for m in recent_mems]
+
+    # ── Actions region ─────────────────────────────────────
+    action_logs = list(db["activity_log"].find({
+        "type": {"$in": ["k1_autonomous_report", "k1_tool_action"]},
+        "timestamp": {"$gte": since_2h}
+    }).sort("timestamp", -1).limit(10))
+    action_items = []
+    for log in action_logs:
+        d = log.get("details", {})
+        ts = log.get("timestamp", "")
+        if log.get("type") == "k1_autonomous_report":
+            action_items.append({
+                "type": "action", "content": d.get("summary", "")[:200],
+                "time": _time_label(ts), "age_seconds": _age(ts)
+            })
+        else:
+            action_items.append({
+                "type": "tool",
+                "content": f"Tool: {d.get('tool', '?')} — {'OK' if d.get('success') else 'FAIL'}",
+                "details": d.get("preview", "")[:100],
+                "time": _time_label(ts), "age_seconds": _age(ts)
+            })
+
+    # ── Learning region ────────────────────────────────────
+    learn_mems = list(db["memories"].find({
+        "type": {"$in": ["internet_knowledge", "creative_idea", "k1_daily_check"]},
+        "created_at": {"$gte": since_24h}
+    }).sort("created_at", -1).limit(10))
+    learning_items = [{
+        "type": "learning",
+        "content": m.get("content", "")[:200],
+        "time": _time_label(m.get("created_at", "")),
+        "age_seconds": _age(m.get("created_at", ""))
+    } for m in learn_mems]
+
+    # ── Planning region ────────────────────────────────────
+    planned_tasks = list(db["tasks"].find({
+        "status": {"$in": ["pending", "planned", "in_progress"]}
+    }).sort("created_at", -1).limit(8))
+    planning_items = [{
+        "type": "plan",
+        "content": t.get("title", ""),
+        "details": t.get("description", "")[:100],
+        "time": _time_label(t.get("created_at", "")),
+        "age_seconds": _age(t.get("created_at", ""))
+    } for t in planned_tasks]
+
+    # ── Thought stream (unified timeline) ──────────────────
+    all_thoughts = sorted(
+        goals_items + reasoning_items + memory_items + action_items + learning_items + planning_items,
+        key=lambda x: x.get("age_seconds", 9999)
+    )[:30]
+
+    # ── Region summaries ───────────────────────────────────
+    def _summary(items, fallback="Idle"):
+        if items:
+            return items[0]["content"][:120]
+        return fallback
+
+    # ── Stats from daemon ──────────────────────────────────
+    daemon_stats = autonomy_daemon.stats if autonomy_daemon else {}
+
+    return {
+        "regions": {
+            "goals":     {"items": goals_items,     "summary": _summary(goals_items, "No active goals")},
+            "reasoning": {"items": reasoning_items, "summary": _summary(reasoning_items, "No active reasoning")},
+            "memory":    {"items": memory_items,    "summary": _summary(memory_items, "No recent memories")},
+            "actions":   {"items": action_items,    "summary": _summary(action_items, "No recent actions")},
+            "learning":  {"items": learning_items,  "summary": _summary(learning_items, "No recent learning")},
+            "planning":  {"items": planning_items,  "summary": _summary(planning_items, "No active plans")},
+        },
+        "thought_stream": all_thoughts,
+        "current_goals": current_goals,
+        "stats": daemon_stats,
+        "timestamp": now.isoformat(),
+    }
 
 
 # ============================================================
