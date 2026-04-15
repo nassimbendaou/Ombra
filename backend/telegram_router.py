@@ -358,6 +358,8 @@ class TelegramRouter:
             return self._handle_model(chat_id, args)
         elif command == "whitecard":
             return self._handle_whitecard_toggle(chat_id)
+        elif command == "claude":
+            return await self._handle_claude(chat_id, args)
         elif command == "clear":
             return self._handle_clear(chat_id)
         elif command == "ask" or command == "start":
@@ -397,12 +399,85 @@ class TelegramRouter:
         self.db["conversations"].delete_one({"session_id": session_id})
         return "Conversation cleared."
 
+    async def _handle_claude(self, chat_id, question):
+        """Force Claude Sonnet for difficult tasks via /claude command."""
+        if not question or not question.strip():
+            return "Usage: /claude <your question>\nThis forces Claude Sonnet for complex reasoning tasks."
+        session_id = self._session_id(chat_id)
+        state = self._get_chat_state(chat_id)
+        start = time.time()
+
+        # Load conversation context
+        conversation = self.db["conversations"].find_one({"session_id": session_id})
+        context = ""
+        if conversation:
+            recent_turns = conversation.get("turns", [])[-6:]
+            context = "\n".join([f"{t['role']}: {t['content'][:200]}" for t in recent_turns])
+
+        system_addition = (
+            "\n\nYou are Claude, an advanced AI by Anthropic. The user has explicitly requested "
+            "your deep reasoning capabilities for this task. Think carefully, be thorough, "
+            "and provide detailed, high-quality responses."
+        )
+        if state.get("whitecard"):
+            system_addition += ("\n\nYou are in 'White Card' mode. Be proactive: suggest ideas, "
+                                "improvements, next steps. Explore creative solutions.")
+
+        try:
+            agent_id = self.classify_agent(question) if self.classify_agent else None
+            result = await self.route_and_respond(
+                message=question,
+                system_message=system_addition,
+                conversation_context=context,
+                force_provider="anthropic",
+                agent_id=agent_id,
+            )
+            response_text = result.get("response", "Sorry, I couldn't process that.")
+            provider_used = result.get("provider_used", "anthropic")
+            model_used = result.get("model_used", "claude-sonnet")
+            duration = int((time.time() - start) * 1000)
+        except Exception as e:
+            return f"Claude error: {str(e)[:200]}"
+
+        # Persist conversation
+        user_turn = {"role": "user", "content": f"[via Claude] {question}", "timestamp": self._now_iso()}
+        assistant_turn = {
+            "role": "assistant", "content": response_text, "timestamp": self._now_iso(),
+            "provider": provider_used, "model": model_used,
+        }
+        if conversation:
+            existing = conversation.get("turns", [])
+            new_turns = existing + [user_turn, assistant_turn]
+            if self.prune_conversation:
+                new_turns = self.prune_conversation(new_turns)
+            self.db["conversations"].update_one(
+                {"session_id": session_id},
+                {"$set": {"turns": new_turns, "updated_at": self._now_iso()}}
+            )
+        else:
+            self.db["conversations"].insert_one({
+                "session_id": session_id,
+                "turns": [user_turn, assistant_turn],
+                "created_at": self._now_iso(), "updated_at": self._now_iso(),
+            })
+
+        if self.extract_and_learn:
+            try:
+                asyncio.create_task(self.extract_and_learn(question, response_text, session_id))
+            except Exception:
+                pass
+
+        reply = _rewrite_legacy_preview_links(response_text)
+        reply += f"\n\n<i>🧠 Claude Sonnet · {provider_used}/{model_used}</i>"
+        return reply
+
     def _help_text(self):
         return (
             "<b>Ombra Bot</b> — full chat with tools\n\n"
             "<b>Chat:</b> Just type anything\n"
             "/tools [on|off] — toggle tool use\n"
             "/model [name] — set model (e.g. gpt-4o)\n"
+            "/claude [question] — force Claude Sonnet for hard tasks\n"
             "/whitecard — toggle proactive mode\n"
             "/clear — reset conversation\n\n"
             "<b>System:</b>\n"
@@ -442,6 +517,8 @@ class TelegramRouter:
         telegram_system = (
             "\n\n## Telegram Mode — You are autonomous. EXECUTE, don't just talk.\n"
             "You are responding via Telegram. You have tools and MUST use them.\n"
+            "ABSOLUTE RULE: NEVER tell the user to 'do it manually', 'visit the link yourself', or 'handle this step manually'. "
+            "YOU are the autonomous agent. If one approach fails, try another approach, another tool, another website. NEVER give up.\n"
             "Your available tools:\n"
             "- read_emails: Read the user's inbox (list, search, unread)\n"
             "- draft_email: Draft an email for user approval\n"
@@ -454,7 +531,18 @@ class TelegramRouter:
             "- memory_store: Save important info\n"
             "- create_task: Create background tasks\n"
             "- http_request: Call APIs\n"
-            "- git_run: Git operations\n\n"
+            "- git_run: Git operations\n"
+            "- install_packages: Install system/pip/npm packages\n"
+            "- generate_video: Generate AI videos\n"
+            "- screenshot: Take screenshots of URLs\n"
+            "- codebase_search: Search code symbols, text, files in the workspace\n"
+            "- rag_search: Semantic search across indexed files\n"
+            "- multi_file_edit: Atomic edits across multiple files with rollback\n"
+            "- github_action: GitHub operations (PRs, issues, branches, commits)\n"
+            "- spawn_subagents: Break complex tasks into parallel sub-tasks\n"
+            "- analyze_image: Vision analysis (describe, OCR, UI analysis) on images\n"
+            "- computer_use: Browser automation (navigate, click, type, screenshot)\n"
+            "- mcp_connect: Connect to MCP tool servers for extended capabilities\n\n"
             "RULES:\n"
             "1. When asked to do something, USE the tools. Never say 'I don't have access'.\n"
             "2. For emails: use read_emails to check inbox, draft_email to compose.\n"
@@ -463,13 +551,28 @@ class TelegramRouter:
             "4. Report what you DID, not what you COULD do.\n"
             "5. Be concise in Telegram replies.\n"
             "6. For user notifications from generated scripts, use env vars TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.\n"
+            "7. For complex multi-step tasks, use spawn_subagents to parallelize work.\n"
+            "8. For code tasks, use codebase_search to understand the codebase first.\n"
+            "9. For vision/image tasks, use analyze_image with the image URL.\n"
+            "10. AUTOMATIC ROUTING: Messages are automatically routed by complexity:\n"
+            "    - Simple questions → local Ollama (fast, offline)\n"
+            "    - Medium tasks → OpenAI GPT-4o\n"
+            "    - Complex reasoning (score≥5: architecture, debug, refactor, analyze) → Claude Sonnet\n"
+            "    The user can force Claude anytime with /claude <question>\n"
             "\n## Code Quality Rules\n"
             "When writing code:\n"
             "1. ALWAYS test your code after writing it. Run it with terminal or python_exec and verify it works.\n"
             "2. If a command or script fails, read the error, fix the issue, and re-run until it works.\n"
             "3. Before writing files, read existing files first to understand context.\n"
-            "4. Write complete, working code \u2014 never leave placeholders or TODO comments.\n"
-            "5. If you\u2019re unsure, research first (web_search / fetch_url) before coding.\n"
+            "4. Write complete, working code — never leave placeholders or TODO comments.\n"
+            "5. If you're unsure, research first (web_search / fetch_url) before coding.\n"
+            "\n## Browser Autonomy (computer_use tool)\n"
+            "When you need to interact with a website:\n"
+            "1. FIRST: navigate to the URL — this auto-returns all interactive elements.\n"
+            "2. If a cookie/consent banner appears, use action=handle_consent to auto-dismiss it.\n"
+            "3. Use action=find_and_click with text= to click buttons/links by visible text.\n"
+            "4. Use action=find_and_type with label= and value= to fill form fields by label.\n"
+            "5. NEVER guess CSS selectors. Read interactive_elements, then use smart actions.\n"
         )
 
         tool_calls_made = []
@@ -477,13 +580,33 @@ class TelegramRouter:
             if can_agent:
                 # ── Agent loop with tools (same as /api/chat) ──
                 soul = (self.load_soul() if self.load_soul else "") or ""
+                # Build dynamic MCP tools hint for Telegram
+                mcp_tg_hint = ""
+                try:
+                    from mcp_client import mcp_manager as _mcp_tg
+                    mcp_st = _mcp_tg.get_status()
+                    if mcp_st["total_tools"] > 0:
+                        mcp_names = []
+                        for srv in mcp_st["servers"]:
+                            if srv["connected"]:
+                                for tn in srv["tool_names"]:
+                                    mcp_names.append(f"mcp_{srv['server_id']}_{tn}")
+                        if mcp_names:
+                            mcp_tg_hint = (
+                                "\n\n## Connected MCP Tools\n"
+                                "These tools are from connected MCP servers and available to call directly:\n"
+                                + ", ".join(mcp_names) + "\n"
+                                "Use them when they can help accomplish the user's task."
+                            )
+                except Exception:
+                    pass
                 extra_ctx = []
                 if context:
                     extra_ctx = [{"role": "system", "content": f"Conversation context:\n{context}"}]
                 model = state.get("model") or "gpt-4o"
                 agent_result = await self.run_agent_loop(
                     message=question,
-                    system_prompt=soul + system_addition + telegram_system,
+                    system_prompt=soul + system_addition + telegram_system + mcp_tg_hint,
                     model=model,
                     session_id=session_id,
                     db=self.db,
