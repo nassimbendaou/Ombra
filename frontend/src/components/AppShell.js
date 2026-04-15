@@ -3,7 +3,8 @@ import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, MessageSquare, Shield, Activity, Settings,
-  ChevronLeft, ChevronRight, Zap, Menu, X, Bot, Cpu, Brain, BarChart3, Sparkles, Mail
+  ChevronLeft, ChevronRight, Zap, Menu, X, Bot, Cpu, Brain, BarChart3, Sparkles, Mail,
+  Plug, Code2, Github, Webhook, FlaskConical, Monitor
 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Separator } from './ui/separator';
@@ -21,6 +22,12 @@ const navItems = [
   { path: '/skills', icon: Sparkles, label: 'Skills' },
   { path: '/permissions', icon: Shield, label: 'Permissions' },
   { path: '/drafts', icon: Mail, label: 'Drafts' },
+  { path: '/mcp', icon: Plug, label: 'MCP' },
+  { path: '/codebase', icon: Code2, label: 'Codebase' },
+  { path: '/github', icon: Github, label: 'GitHub' },
+  { path: '/hooks', icon: Webhook, label: 'Hooks' },
+  { path: '/tools-lab', icon: FlaskConical, label: 'Tools Lab' },
+  { path: '/bastion', icon: Monitor, label: 'Bastion' },
   { path: '/activity', icon: Activity, label: 'Activity' },
   { path: '/settings', icon: Settings, label: 'Settings' },
 ];
@@ -76,7 +83,7 @@ export default function AppShell() {
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 py-4 px-2 space-y-1">
+        <nav className="flex-1 overflow-y-auto py-4 px-2 space-y-1">
           {navItems.map(item => (
             <NavLink
               key={item.path}
@@ -146,7 +153,7 @@ export default function AppShell() {
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
-              className="md:hidden absolute inset-x-0 top-14 z-50 bg-card border-b border-border/60 p-4 space-y-1"
+              className="md:hidden absolute inset-x-0 top-14 z-50 bg-card border-b border-border/60 p-4 space-y-1 overflow-y-auto max-h-[80vh]"
             >
               {navItems.map(item => (
                 <NavLink

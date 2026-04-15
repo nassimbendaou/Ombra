@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
@@ -68,9 +68,24 @@ from workspace_loader import (
     install_skill, delete_skill, load_soul
 )
 
+# New module imports
+from plugin_hooks import hook_manager, register_default_hooks
+from streaming import stream_manager, StreamEventType, sse_generator
+
+# Load persistent .env file (survives restarts, written by set_claude_key etc.)
+_ENV_FILE = os.path.join(os.path.dirname(__file__), ".env")
+if os.path.exists(_ENV_FILE):
+    with open(_ENV_FILE) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _, _v = _line.partition("=")
+                os.environ.setdefault(_k.strip(), _v.strip())
+
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
 DB_NAME = os.environ.get("DB_NAME", "ombra_db")
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -370,11 +385,14 @@ async def call_api_provider(prompt: str, system_message: str, provider: str, mod
                     return data["choices"][0]["message"]["content"]
 
             elif provider == "anthropic":
+                anthropic_key = ANTHROPIC_KEY or EMERGENT_KEY
+                if not anthropic_key:
+                    raise Exception("No Anthropic API key configured (ANTHROPIC_API_KEY or EMERGENT_LLM_KEY)")
                 async with httpx.AsyncClient(timeout=60) as c:
                     resp = await c.post(
                         "https://api.anthropic.com/v1/messages",
                         headers={
-                            "x-api-key": EMERGENT_KEY,
+                            "x-api-key": anthropic_key,
                             "anthropic-version": "2023-06-01",
                             "Content-Type": "application/json"
                         },
@@ -1009,6 +1027,21 @@ async def lifespan(app: FastAPI):
     )
 
     log_activity("system", {"event": "startup", "message": "Ombra system started (Phase 5: Scheduling + Queue + Creativity)"})
+
+    # Initialize new subsystems
+    register_default_hooks()
+    log_activity("system", {"event": "hooks_loaded", "message": "Plugin hooks initialized"})
+
+    # Restore persisted MCP servers
+    try:
+        from mcp_client import mcp_manager as _mcp_restore
+        await _mcp_restore.restore_servers()
+        mcp_st = _mcp_restore.get_status()
+        if mcp_st["total_servers"] > 0:
+            log_activity("system", {"event": "mcp_restored", "message": f"Restored {mcp_st['connected']}/{mcp_st['total_servers']} MCP servers ({mcp_st['total_tools']} tools)"})
+    except Exception as e:
+        log_activity("system", {"event": "mcp_restore_error", "message": str(e)})
+
     yield
 
     # Cleanup
@@ -1313,10 +1346,34 @@ async def chat_stream_endpoint(req: ChatRequest):
 
         if AGENT_LOOP_AVAILABLE and use_tools_stream and EMERGENT_KEY:
             soul = load_soul() or ""
+            # Build dynamic MCP tools list
+            mcp_tools_hint = ""
+            try:
+                from mcp_client import mcp_manager as _mcp_mgr
+                status = _mcp_mgr.get_status()
+                if status["total_tools"] > 0:
+                    mcp_names = []
+                    for srv in status["servers"]:
+                        if srv["connected"]:
+                            for tn in srv["tool_names"]:
+                                mcp_names.append(f"mcp_{srv['server_id']}_{tn}")
+                    if mcp_names:
+                        mcp_tools_hint = (
+                            "\n\n## Connected MCP Tools\n"
+                            "These tools are from connected MCP servers and are available for you to call directly:\n"
+                            + ", ".join(mcp_names) + "\n"
+                            "Use them when they can help accomplish the user's task."
+                        )
+            except Exception:
+                pass
             tools_hint = (
                 "\n\nYou have tools available and should USE them when the user asks you to do something. "
+                "NEVER tell the user to 'do it manually' or 'visit the link yourself'. YOU are the autonomous agent — YOU do the work. "
+                "If one approach fails, try another. If a website blocks you, try a different website. NEVER give up after one failure. "
                 "Available: read_emails, draft_email, web_search, fetch_url, browser_research, terminal, read_file, "
-                "write_file, list_dir, python_exec, memory_store, create_task, http_request, git_run, install_packages, generate_video, screenshot. "
+                "write_file, list_dir, python_exec, memory_store, create_task, http_request, git_run, install_packages, "
+                "generate_video, screenshot, codebase_search, rag_search, multi_file_edit, github_action, "
+                "spawn_subagents, analyze_image, computer_use, mcp_connect. "
                 "Execute tasks — don't just describe what you would do. "
                 "Use install_packages to install dependencies (pip, npm, or apt) whenever a project needs them. "
                 "For notifications from generated scripts, use TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars."
@@ -1344,7 +1401,15 @@ async def chat_stream_endpoint(req: ChatRequest):
                 "5. When a tool call fails, read the error, fix the root cause, and retry — do NOT repeat the same call blindly.\n"
                 "6. Limit yourself to 3 retry attempts per tool call; after that, report the failure to the user.\n"
                 "7. For any non-trivial code, write at least one quick validation test before considering the task complete."
-            )
+                "\n\n## Browser Autonomy (computer_use tool)\n"
+                "When you need to interact with a website:\n"
+                "1. FIRST: navigate to the URL — this auto-returns all interactive elements (buttons, links, inputs).\n"
+                "2. If a cookie/consent banner appears, use action=handle_consent to auto-dismiss it.\n"
+                "3. Use action=find_and_click with text= to click buttons/links by their visible text (e.g., text='Accept all').\n"
+                "4. Use action=find_and_type with label= and value= to fill in form fields by their label.\n"
+                "5. NEVER guess CSS selectors. Navigate first, read the interactive_elements list, then use find_and_click/find_and_type.\n"
+                "6. After each action, check the result to verify it worked before proceeding.\n"
+            ) + mcp_tools_hint
             extra_ctx = []
             if context:
                 extra_ctx = [{"role": "system", "content": f"Conversation context:\n{context}"}]
@@ -1483,10 +1548,34 @@ async def chat_endpoint(req: ChatRequest):
     if AGENT_LOOP_AVAILABLE and use_tools and EMERGENT_KEY:
         # Build system prompt for agent loop
         soul = load_soul() or ""
+        # Build dynamic MCP tools list
+        mcp_tools_hint = ""
+        try:
+            from mcp_client import mcp_manager as _mcp_mgr2
+            status = _mcp_mgr2.get_status()
+            if status["total_tools"] > 0:
+                mcp_names = []
+                for srv in status["servers"]:
+                    if srv["connected"]:
+                        for tn in srv["tool_names"]:
+                            mcp_names.append(f"mcp_{srv['server_id']}_{tn}")
+                if mcp_names:
+                    mcp_tools_hint = (
+                        "\n\n## Connected MCP Tools\n"
+                        "These tools are from connected MCP servers and are available for you to call directly:\n"
+                        + ", ".join(mcp_names) + "\n"
+                        "Use them when they can help accomplish the user's task."
+                    )
+        except Exception:
+            pass
         tools_hint = (
             "\n\nYou have tools available and should USE them when the user asks you to do something. "
+            "NEVER tell the user to 'do it manually' or 'visit the link yourself'. YOU are the autonomous agent — YOU do the work. "
+            "If one approach fails, try another. If a website blocks you, try a different website. NEVER give up after one failure. "
             "Available: read_emails, draft_email, web_search, fetch_url, browser_research, terminal, read_file, "
-            "write_file, list_dir, python_exec, memory_store, create_task, http_request, git_run, install_packages, generate_video, screenshot. "
+            "write_file, list_dir, python_exec, memory_store, create_task, http_request, git_run, install_packages, "
+            "generate_video, screenshot, codebase_search, rag_search, multi_file_edit, github_action, "
+            "spawn_subagents, analyze_image, computer_use, mcp_connect. "
             "Execute tasks — don't just describe what you would do. "
             "Use install_packages to install dependencies (pip, npm, or apt) whenever a project needs them. "
             "For notifications from generated scripts, use TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars."
@@ -1514,7 +1603,15 @@ async def chat_endpoint(req: ChatRequest):
             "5. When a tool call fails, read the error, fix the root cause, and retry — do NOT repeat the same call blindly.\n"
             "6. Limit yourself to 3 retry attempts per tool call; after that, report the failure to the user.\n"
             "7. For any non-trivial code, write at least one quick validation test before considering the task complete."
-        )
+            "\n\n## Browser Autonomy (computer_use tool)\n"
+            "When you need to interact with a website:\n"
+            "1. FIRST: navigate to the URL — this auto-returns all interactive elements (buttons, links, inputs).\n"
+            "2. If a cookie/consent banner appears, use action=handle_consent to auto-dismiss it.\n"
+            "3. Use action=find_and_click with text= to click buttons/links by their visible text (e.g., text='Accept all').\n"
+            "4. Use action=find_and_type with label= and value= to fill in form fields by their label.\n"
+            "5. NEVER guess CSS selectors. Navigate first, read the interactive_elements list, then use find_and_click/find_and_type.\n"
+            "6. After each action, check the result to verify it worked before proceeding.\n"
+        ) + mcp_tools_hint
         extra_ctx = []
         if context:
             extra_ctx = [{"role": "system", "content": f"Conversation context:\n{context}"}]
@@ -2061,6 +2158,198 @@ async def update_settings(req: SettingsUpdate):
     settings_col.update_one({"user_id": "default"}, {"$set": update})
     log_activity("system", {"event": "settings_updated", "changes": update})
     return await get_settings()
+
+
+# ── Anthropic / Claude API Key Management ────────────────────────────────────
+
+@app.get("/api/settings/claude")
+async def get_claude_status():
+    """Check if Anthropic API key is configured."""
+    key = ANTHROPIC_KEY or EMERGENT_KEY
+    has_key = bool(key)
+    return {
+        "configured": has_key,
+        "source": "ANTHROPIC_API_KEY" if ANTHROPIC_KEY else ("EMERGENT_LLM_KEY" if EMERGENT_KEY else "none"),
+        "model": "claude-sonnet-4-5-20250929",
+    }
+
+
+@app.post("/api/settings/claude")
+async def set_claude_key(request: Request):
+    """Set or update the Anthropic API key at runtime."""
+    global ANTHROPIC_KEY
+    payload = await request.json()
+    key = payload.get("api_key", "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="api_key is required")
+    # Validate the key by making a simple API call
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            resp = await c.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": key,
+                    "anthropic-version": "2023-06-01",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "claude-sonnet-4-5-20250929",
+                    "max_tokens": 10,
+                    "messages": [{"role": "user", "content": "hi"}]
+                }
+            )
+            data = resp.json()
+            if "error" in data:
+                raise HTTPException(status_code=400, detail=f"Invalid key: {data['error'].get('message', '')}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Key validation failed: {str(e)}")
+    # Store in env and memory
+    ANTHROPIC_KEY = key
+    os.environ["ANTHROPIC_API_KEY"] = key
+    # Persist to .env file so it survives restarts
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    env_lines = []
+    if os.path.exists(env_path):
+        with open(env_path) as _ef:
+            env_lines = [l for l in _ef.readlines() if not l.startswith("ANTHROPIC_API_KEY=")]
+    env_lines.append(f"ANTHROPIC_API_KEY={key}\n")
+    with open(env_path, "w") as _ef:
+        _ef.writelines(env_lines)
+    # Persist to settings collection
+    settings_col.update_one(
+        {"user_id": "default"},
+        {"$set": {"anthropic_api_key_set": True, "updated_at": now_iso()}},
+        upsert=True
+    )
+    log_activity("system", {"event": "claude_key_configured"})
+    return {"status": "configured", "model": "claude-sonnet-4-5-20250929"}
+
+
+# ── Bastion / RDP Management ────────────────────────────────────────────────
+
+@app.get("/api/bastion/status")
+async def bastion_status():
+    """Get current xRDP status and connection info."""
+    import subprocess
+    try:
+        result = subprocess.run(["systemctl", "is-active", "xrdp"], capture_output=True, text=True, timeout=5)
+        xrdp_running = result.stdout.strip() == "active"
+    except Exception:
+        xrdp_running = False
+
+    # Get the server's public IP
+    server_ip = os.environ.get("SERVER_PUBLIC_IP", "20.67.232.113")
+    rdp_port = int(os.environ.get("RDP_PORT", "3389"))
+
+    # Check for bastion user
+    bastion_user = os.environ.get("BASTION_USER", "ombra-rdp")
+    try:
+        result = subprocess.run(["id", bastion_user], capture_output=True, text=True, timeout=5)
+        user_exists = result.returncode == 0
+    except Exception:
+        user_exists = False
+
+    return {
+        "xrdp_running": xrdp_running,
+        "server_ip": server_ip,
+        "rdp_port": rdp_port,
+        "bastion_user": bastion_user if user_exists else None,
+        "user_exists": user_exists,
+        "connection_string": f"{server_ip}:{rdp_port}" if xrdp_running else None,
+    }
+
+
+@app.post("/api/bastion/setup")
+async def bastion_setup(request: Request):
+    """Create bastion user and start xRDP. Requires sudo."""
+    import subprocess
+    payload = await request.json()
+    username = payload.get("username", "ombra-rdp")
+    password = payload.get("password", "")
+    if not password or len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+    # Sanitize username
+    import re as _re
+    if not _re.match(r'^[a-z_][a-z0-9_-]*$', username):
+        raise HTTPException(status_code=400, detail="Invalid username format")
+
+    results = []
+    try:
+        # Create user if not exists
+        check = subprocess.run(["id", username], capture_output=True, text=True, timeout=5)
+        if check.returncode != 0:
+            subprocess.run(
+                ["sudo", "useradd", "-m", "-s", "/bin/bash", username],
+                capture_output=True, text=True, timeout=10, check=True
+            )
+            results.append(f"User '{username}' created")
+        else:
+            results.append(f"User '{username}' already exists")
+
+        # Set password
+        proc = subprocess.run(
+            ["sudo", "chpasswd"],
+            input=f"{username}:{password}",
+            capture_output=True, text=True, timeout=10
+        )
+        if proc.returncode == 0:
+            results.append("Password set")
+        else:
+            results.append(f"Password set failed: {proc.stderr}")
+
+        # Install xrdp if not present
+        check_xrdp = subprocess.run(["which", "xrdp"], capture_output=True, text=True, timeout=5)
+        if check_xrdp.returncode != 0:
+            subprocess.run(
+                ["sudo", "apt-get", "install", "-y", "xrdp", "xfce4", "xfce4-goodies"],
+                capture_output=True, text=True, timeout=300
+            )
+            results.append("xRDP + XFCE installed")
+            # Configure xsession for the user
+            subprocess.run(
+                ["sudo", "bash", "-c", f"echo 'xfce4-session' > /home/{username}/.xsession"],
+                capture_output=True, text=True, timeout=5
+            )
+            subprocess.run(
+                ["sudo", "chown", f"{username}:{username}", f"/home/{username}/.xsession"],
+                capture_output=True, text=True, timeout=5
+            )
+        else:
+            results.append("xRDP already installed")
+
+        # Enable and start xrdp
+        subprocess.run(["sudo", "systemctl", "enable", "xrdp"], capture_output=True, text=True, timeout=10)
+        subprocess.run(["sudo", "systemctl", "start", "xrdp"], capture_output=True, text=True, timeout=10)
+        results.append("xRDP started")
+
+        # Save bastion user info
+        os.environ["BASTION_USER"] = username
+        settings_col.update_one(
+            {"user_id": "default"},
+            {"$set": {"bastion_user": username, "bastion_configured": True, "updated_at": now_iso()}},
+            upsert=True
+        )
+
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Setup failed: {e.stderr or str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"status": "ok", "results": results, "username": username}
+
+
+@app.post("/api/bastion/restart")
+async def bastion_restart():
+    """Restart xRDP service."""
+    import subprocess
+    try:
+        subprocess.run(["sudo", "systemctl", "restart", "xrdp"], capture_output=True, text=True, timeout=15, check=True)
+        return {"status": "restarted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================
@@ -3798,3 +4087,238 @@ Be creative. Suggest novel approaches. Think outside the box."""
         "duration_ms": duration_ms,
         "model_used": "mistral" if local_success else (cloud_provider or "unknown")
     }
+
+
+# ============================================================
+# NEW SUBSYSTEM ENDPOINTS
+# ============================================================
+
+# ── Plugin Hooks ──────────────────────────────────────────────────────────────
+
+@app.get("/api/hooks")
+async def list_hooks():
+    return {"hooks": hook_manager.list_hooks(), "stats": hook_manager.get_stats()}
+
+@app.get("/api/hooks/log")
+async def hooks_log(limit: int = 50):
+    return {"log": hook_manager.get_execution_log(limit)}
+
+@app.post("/api/hooks/{hook_id}/enable")
+async def enable_hook(hook_id: str):
+    if hook_manager.enable(hook_id):
+        return {"status": "enabled"}
+    raise HTTPException(status_code=404, detail="Hook not found")
+
+@app.post("/api/hooks/{hook_id}/disable")
+async def disable_hook(hook_id: str):
+    if hook_manager.disable(hook_id):
+        return {"status": "disabled"}
+    raise HTTPException(status_code=404, detail="Hook not found")
+
+# ── Codebase Intelligence ─────────────────────────────────────────────────────
+
+@app.get("/api/codebase/graph")
+async def codebase_graph(directory: str = "/tmp/ombra_workspace"):
+    try:
+        from codebase_intelligence import file_graph
+        file_graph.build(directory)
+        return {
+            "nodes": len(file_graph.nodes),
+            "edges": len(file_graph.edges),
+            "files": list(file_graph.nodes.keys())[:100],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/codebase/search")
+async def codebase_search(q: str, search_type: str = "symbol"):
+    try:
+        from codebase_intelligence import file_graph
+        if not file_graph.nodes:
+            file_graph.build("/tmp/ombra_workspace")
+        if search_type == "symbol":
+            return {"results": file_graph.search_symbol(q)[:30]}
+        else:
+            return {"results": file_graph.search_code(q, "/tmp/ombra_workspace")[:30]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ── RAG / Vector Embeddings ──────────────────────────────────────────────────
+
+@app.post("/api/rag/index")
+async def rag_index(directory: str = "/tmp/ombra_workspace"):
+    try:
+        from rag_engine import codebase_rag
+        stats = codebase_rag.index_directory(directory)
+        return {"status": "indexed", "stats": stats}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/rag/search")
+async def rag_search(q: str, scope: str = "all", top_k: int = 5):
+    try:
+        from rag_engine import codebase_rag
+        results = codebase_rag.search(q, top_k=top_k, scope=scope)
+        return {"results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ── MCP Servers ──────────────────────────────────────────────────────────────
+
+@app.get("/api/mcp/status")
+async def mcp_status():
+    try:
+        from mcp_client import mcp_manager
+        return {"status": mcp_manager.get_status()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/mcp/connect")
+async def mcp_connect(request: Request):
+    try:
+        from mcp_client import mcp_manager, MCPServerConfig
+        payload = await request.json()
+        server_id = payload.get("server_id", "")
+        command = payload.get("command", "")
+        args = payload.get("args", [])
+        url = payload.get("url", "")
+        if not server_id:
+            raise HTTPException(status_code=400, detail="server_id is required")
+        cmd_args = args if isinstance(args, list) else (args.split() if args else [])
+        transport = "sse" if url else "stdio"
+        config = MCPServerConfig(
+            server_id=server_id,
+            name=server_id,
+            transport=transport,
+            command=command,
+            args=cmd_args,
+            url=url,
+        )
+        result = await mcp_manager.add_server(config)
+        return {"status": "connected", "server_id": server_id, **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/mcp/{server_id}")
+async def mcp_disconnect(server_id: str):
+    try:
+        from mcp_client import mcp_manager
+        await mcp_manager.remove_server(server_id)
+        return {"status": "disconnected"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ── Sub-Agents ───────────────────────────────────────────────────────────────
+
+@app.post("/api/subagents/run")
+async def run_subagents(task: str, max_parallel: int = 3):
+    try:
+        from sub_agents import sub_agent_orchestrator
+        result = await sub_agent_orchestrator.run(task, max_parallel=max_parallel)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ── Streaming ────────────────────────────────────────────────────────────────
+
+@app.get("/api/stream/{channel_id}")
+async def stream_channel(channel_id: str):
+    channel = stream_manager.get_channel(channel_id)
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    return StreamingResponse(
+        sse_generator(channel),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+@app.get("/api/stream")
+async def list_streams():
+    return {"channels": stream_manager.list_channels()}
+
+# ── GitHub Integration ───────────────────────────────────────────────────────
+
+@app.get("/api/github/config")
+async def get_github_config():
+    """Return current GitHub owner/repo config (token masked)."""
+    owner = os.environ.get("GITHUB_OWNER", "")
+    repo = os.environ.get("GITHUB_REPO", "")
+    token = os.environ.get("GITHUB_TOKEN", "")
+    return {
+        "owner": owner,
+        "repo": repo,
+        "token_set": bool(token),
+        "token_preview": f"{token[:8]}..." if token else "",
+    }
+
+@app.post("/api/github/config")
+async def set_github_config(request: Request):
+    """Set GITHUB_OWNER, GITHUB_REPO and optionally GITHUB_TOKEN at runtime, persisted to .env."""
+    payload = await request.json()
+    owner = payload.get("owner", "").strip()
+    repo = payload.get("repo", "").strip()
+    token = payload.get("token", "").strip()
+    if not owner or not repo:
+        raise HTTPException(status_code=400, detail="owner and repo are required")
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    env_lines = []
+    if os.path.exists(env_path):
+        with open(env_path) as _ef:
+            env_lines = [l for l in _ef.readlines()
+                         if not l.startswith("GITHUB_OWNER=")
+                         and not l.startswith("GITHUB_REPO=")
+                         and (not token or not l.startswith("GITHUB_TOKEN="))]
+    env_lines.append(f"GITHUB_OWNER={owner}\n")
+    env_lines.append(f"GITHUB_REPO={repo}\n")
+    if token:
+        env_lines.append(f"GITHUB_TOKEN={token}\n")
+    with open(env_path, "w") as _ef:
+        _ef.writelines(env_lines)
+    os.environ["GITHUB_OWNER"] = owner
+    os.environ["GITHUB_REPO"] = repo
+    if token:
+        os.environ["GITHUB_TOKEN"] = token
+    log_activity("system", {"event": "github_config_updated", "owner": owner, "repo": repo})
+    return {"status": "saved", "owner": owner, "repo": repo}
+
+@app.get("/api/github/status")
+async def github_status():
+    try:
+        from github_integration import github_client
+        repo = await github_client.get_repo()
+        return {"connected": True, "repo": repo}
+    except Exception as e:
+        return {"connected": False, "error": str(e)}
+
+# ── Vision ───────────────────────────────────────────────────────────────────
+
+@app.post("/api/vision/analyze")
+async def vision_analyze(image: str, prompt: str = "Describe this image.", mode: str = "describe"):
+    try:
+        from vision_engine import vision_engine
+        if mode == "ocr":
+            result = await vision_engine.extract_text(image)
+        elif mode == "ui_analysis":
+            result = await vision_engine.analyze_ui(image)
+        else:
+            result = await vision_engine.analyze(image, prompt=prompt)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ── Context Engine ───────────────────────────────────────────────────────────
+
+@app.post("/api/context/build")
+async def build_context(message: str, max_tokens: int = 4000):
+    try:
+        from context_engine import context_engine
+        context = context_engine.build_context(
+            message=message,
+            conversation_history=[],
+            active_files=[],
+            memories=[],
+            max_tokens=max_tokens,
+        )
+        return context
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

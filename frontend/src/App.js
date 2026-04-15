@@ -14,6 +14,12 @@ import Analytics from './pages/Analytics';
 import Skills from './pages/Skills';
 import EmailDrafts from './pages/EmailDrafts';
 import BrainView from './pages/BrainView';
+import McpManager from './pages/McpManager';
+import CodebaseExplorer from './pages/CodebaseExplorer';
+import GithubIntegration from './pages/GithubIntegration';
+import PluginHooks from './pages/PluginHooks';
+import ToolsLab from './pages/ToolsLab';
+import Bastion from './pages/Bastion';
 import { Toaster } from './components/ui/sonner';
 import './App.css';
 
@@ -36,6 +42,12 @@ function App() {
             <Route path="/activity" element={<ActivityTimeline />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/drafts" element={<EmailDrafts />} />
+            <Route path="/mcp" element={<McpManager />} />
+            <Route path="/codebase" element={<CodebaseExplorer />} />
+            <Route path="/github" element={<GithubIntegration />} />
+            <Route path="/hooks" element={<PluginHooks />} />
+            <Route path="/tools-lab" element={<ToolsLab />} />
+            <Route path="/bastion" element={<Bastion />} />
           </Route>
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>

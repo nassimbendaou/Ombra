@@ -755,6 +755,173 @@ TOOL_DEFINITIONS = [
                 "required": ["url"]
             }
         }
+    },
+    # ── New tools ──────────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "codebase_search",
+            "description": "Search the codebase for symbols, files, dependencies, or text patterns. Use for understanding code structure, finding functions, tracing imports.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query (symbol name, text pattern, or keyword)"},
+                    "search_type": {"type": "string", "description": "Type: symbol|text|file|dependencies|dependents", "default": "symbol"},
+                    "path": {"type": "string", "description": "Optional file path for dependency queries"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rag_search",
+            "description": "Semantic search across code and memories using vector embeddings. Finds conceptually related content even without exact keyword matches.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Natural language query"},
+                    "scope": {"type": "string", "description": "Search scope: code|memory|all", "default": "all"},
+                    "top_k": {"type": "integer", "description": "Number of results (default 5)", "default": 5}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "multi_file_edit",
+            "description": "Apply coordinated edits across multiple files atomically. If any edit fails, all changes are rolled back. Supports create, modify (full replace or search-and-replace), delete, and rename operations.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string", "description": "Description of what the edit accomplishes"},
+                    "edits": {
+                        "type": "array",
+                        "description": "List of edit operations",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "description": "File path"},
+                                "operation": {"type": "string", "description": "create|modify|delete|rename"},
+                                "new_content": {"type": "string", "description": "New file content (for create/modify)"},
+                                "search": {"type": "string", "description": "Text to find (for search-and-replace modify)"},
+                                "replace": {"type": "string", "description": "Replacement text (for search-and-replace modify)"},
+                                "old_path": {"type": "string", "description": "Original path (for rename)"}
+                            },
+                            "required": ["path", "operation"]
+                        }
+                    }
+                },
+                "required": ["description", "edits"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_action",
+            "description": "Interact with GitHub: list/create PRs, review code, manage issues, list branches, search code, view commits.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "Action: list_prs|create_pr|get_pr|review_pr|merge_pr|list_issues|create_issue|comment_issue|list_branches|create_branch|search_code|list_commits|get_file"},
+                    "owner": {"type": "string", "description": "GitHub owner/org (defaults to GITHUB_OWNER env)"},
+                    "repo": {"type": "string", "description": "Repository name (defaults to GITHUB_REPO env)"},
+                    "number": {"type": "integer", "description": "PR or issue number"},
+                    "title": {"type": "string", "description": "Title for PR/issue creation"},
+                    "body": {"type": "string", "description": "Body for PR/issue/review"},
+                    "head": {"type": "string", "description": "Head branch for PR"},
+                    "base": {"type": "string", "description": "Base branch for PR"},
+                    "branch": {"type": "string", "description": "Branch name for creation/queries"},
+                    "path": {"type": "string", "description": "File path for get_file"},
+                    "query": {"type": "string", "description": "Search query for search_code"},
+                    "event": {"type": "string", "description": "Review event: APPROVE|REQUEST_CHANGES|COMMENT", "default": "COMMENT"},
+                    "labels": {"type": "array", "items": {"type": "string"}, "description": "Labels for issue creation"},
+                    "state": {"type": "string", "description": "Filter state: open|closed|all", "default": "open"}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spawn_subagents",
+            "description": "Decompose a complex task into sub-tasks and execute them in parallel using specialized sub-agents. Best for tasks that can be broken into independent pieces.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string", "description": "The complex task to decompose and execute"},
+                    "max_parallel": {"type": "integer", "description": "Max concurrent sub-agents (default 3)", "default": 3}
+                },
+                "required": ["task"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_image",
+            "description": "Analyze an image using vision AI. Can describe, extract text (OCR), compare images, or analyze UI screenshots.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "image": {"type": "string", "description": "Image source: file path, URL, or base64 data URI"},
+                    "prompt": {"type": "string", "description": "What to analyze (default: general description)"},
+                    "mode": {"type": "string", "description": "Analysis mode: describe|ocr|ui_analysis|compare", "default": "describe"},
+                    "images": {"type": "array", "items": {"type": "string"}, "description": "Multiple images for compare mode"}
+                },
+                "required": ["image"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_use",
+            "description": "Full autonomous browser control. WORKFLOW: 1) navigate to URL (auto-returns interactive elements), 2) use find_and_click/find_and_type for smart interaction by visible text, 3) handle_consent to auto-dismiss cookie banners. Actions: navigate|screenshot|click|type|press_key|scroll|get_content|evaluate_js|wait_for|get_elements|session_info|find_and_click|find_and_type|handle_consent",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "Action to perform. Smart actions: find_and_click (click by visible text), find_and_type (type by field label), handle_consent (auto-dismiss cookie popups). Basic: navigate, screenshot, click, type, press_key, scroll, get_content, evaluate_js, wait_for, get_elements, session_info"},
+                    "url": {"type": "string", "description": "URL to navigate to"},
+                    "selector": {"type": "string", "description": "CSS selector for targeting elements"},
+                    "text": {"type": "string", "description": "For find_and_click: visible text to match. For type: text to type."},
+                    "label": {"type": "string", "description": "For find_and_type: label/placeholder/name of the input field"},
+                    "value": {"type": "string", "description": "For find_and_type: value to enter in the field"},
+                    "key": {"type": "string", "description": "Key to press (Enter, Tab, etc.)"},
+                    "x": {"type": "integer", "description": "X coordinate for click"},
+                    "y": {"type": "integer", "description": "Y coordinate for click"},
+                    "direction": {"type": "string", "description": "Scroll direction: up|down", "default": "down"},
+                    "amount": {"type": "integer", "description": "Scroll amount in pixels", "default": 500},
+                    "script": {"type": "string", "description": "JavaScript to evaluate"},
+                    "full_page": {"type": "boolean", "description": "Full page screenshot", "default": False},
+                    "tag": {"type": "string", "description": "Optional: restrict find_and_click to a specific HTML tag (button, a, etc.)"}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mcp_connect",
+            "description": "Connect to an MCP (Model Context Protocol) tool server to extend available tools dynamically.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "server_id": {"type": "string", "description": "Unique identifier for the server"},
+                    "command": {"type": "string", "description": "Command to launch the MCP server (for stdio transport)"},
+                    "args": {"type": "array", "items": {"type": "string"}, "description": "Command arguments"},
+                    "url": {"type": "string", "description": "URL for SSE transport (alternative to command)"},
+                    "action": {"type": "string", "description": "Action: connect|disconnect|list|status", "default": "connect"}
+                },
+                "required": ["server_id"]
+            }
+        }
     }
 ]
 
@@ -844,11 +1011,293 @@ async def execute_tool(name: str, args: dict, db=None) -> dict:
                 args.get("width", 1280), args.get("height", 720)
             )
 
+        # ── New tool dispatch ─────────────────────────────────────────────
+        elif name == "codebase_search":
+            return await _tool_codebase_search(
+                args.get("query", ""), args.get("search_type", "symbol"),
+                args.get("path", "")
+            )
+
+        elif name == "rag_search":
+            return await _tool_rag_search(
+                args.get("query", ""), args.get("scope", "all"),
+                args.get("top_k", 5)
+            )
+
+        elif name == "multi_file_edit":
+            return await _tool_multi_file_edit(
+                args.get("description", ""), args.get("edits", [])
+            )
+
+        elif name == "github_action":
+            return await _tool_github_action(args)
+
+        elif name == "spawn_subagents":
+            return await _tool_spawn_subagents(
+                args.get("task", ""), args.get("max_parallel", 3)
+            )
+
+        elif name == "analyze_image":
+            return await _tool_analyze_image(
+                args.get("image", ""), args.get("prompt", ""),
+                args.get("mode", "describe"), args.get("images", [])
+            )
+
+        elif name == "computer_use":
+            return await _tool_computer_use(args)
+
+        elif name == "mcp_connect":
+            return await _tool_mcp_connect(args)
+
+        # ── MCP tool dispatch (mcp_<server>_<tool>) ──────────────────────
+        elif name.startswith("mcp_"):
+            from mcp_client import mcp_manager
+            if mcp_manager.is_mcp_tool(name):
+                return await mcp_manager.call_tool(name, args)
+            return {"success": False, "output": f"Unknown MCP tool: {name}"}
+
         else:
             return {"success": False, "output": f"Unknown tool: {name}"}
 
     except Exception as e:
         return {"success": False, "output": f"Tool error: {str(e)}"}
+
+
+# ── New tool implementations ──────────────────────────────────────────────────
+
+async def _tool_codebase_search(query: str, search_type: str, path: str) -> dict:
+    """Search code structure using codebase intelligence."""
+    try:
+        from codebase_intelligence import file_graph
+        if not file_graph.nodes:
+            file_graph.build(WORK_DIR)
+
+        if search_type == "symbol":
+            results = file_graph.search_symbol(query)
+            return {"success": True, "output": json.dumps(results[:20], default=str)}
+        elif search_type == "text":
+            results = file_graph.search_code(query, WORK_DIR)
+            return {"success": True, "output": json.dumps(results[:20], default=str)}
+        elif search_type == "file":
+            matches = [n for n in file_graph.nodes if query.lower() in n.lower()]
+            return {"success": True, "output": json.dumps(matches[:30])}
+        elif search_type == "dependencies" and path:
+            deps = file_graph.get_dependencies(path)
+            return {"success": True, "output": json.dumps(deps[:30])}
+        elif search_type == "dependents" and path:
+            deps = file_graph.get_dependents(path)
+            return {"success": True, "output": json.dumps(deps[:30])}
+        else:
+            results = file_graph.search_symbol(query)
+            return {"success": True, "output": json.dumps(results[:20], default=str)}
+    except Exception as e:
+        return {"success": False, "output": f"Codebase search error: {str(e)}"}
+
+
+async def _tool_rag_search(query: str, scope: str, top_k: int) -> dict:
+    """Semantic search via RAG engine."""
+    try:
+        from rag_engine import codebase_rag
+        results = codebase_rag.search(query, top_k=top_k, scope=scope)
+        output = []
+        for r in results:
+            output.append({
+                "file": r.get("file", ""),
+                "score": round(r.get("score", 0), 4),
+                "text": r.get("text", "")[:500],
+            })
+        return {"success": True, "output": json.dumps(output)}
+    except Exception as e:
+        return {"success": False, "output": f"RAG search error: {str(e)}"}
+
+
+async def _tool_multi_file_edit(description: str, edits: list) -> dict:
+    """Multi-file atomic editing."""
+    try:
+        from multi_file_editor import multi_file_editor
+        session_id = multi_file_editor.create_session(description, edits)
+        result = multi_file_editor.apply_session(session_id)
+        return {"success": result["success"],
+                "output": json.dumps(result, default=str)}
+    except Exception as e:
+        return {"success": False, "output": f"Multi-file edit error: {str(e)}"}
+
+
+async def _tool_github_action(args: dict) -> dict:
+    """GitHub API actions dispatcher."""
+    try:
+        from github_integration import github_client
+        action = args.get("action", "")
+        owner = args.get("owner")
+        repo = args.get("repo")
+
+        if action == "list_prs":
+            result = await github_client.list_prs(state=args.get("state", "open"), owner=owner, repo=repo)
+        elif action == "create_pr":
+            result = await github_client.create_pr(
+                title=args.get("title", ""), body=args.get("body", ""),
+                head=args.get("head", ""), base=args.get("base"), owner=owner, repo=repo)
+        elif action == "get_pr":
+            result = await github_client.get_pr(number=args.get("number", 0), owner=owner, repo=repo)
+        elif action == "review_pr":
+            result = await github_client.review_pr(
+                number=args.get("number", 0), body=args.get("body", ""),
+                event=args.get("event", "COMMENT"), owner=owner, repo=repo)
+        elif action == "merge_pr":
+            result = await github_client.merge_pr(number=args.get("number", 0), owner=owner, repo=repo)
+        elif action == "list_issues":
+            result = await github_client.list_issues(state=args.get("state", "open"), owner=owner, repo=repo)
+        elif action == "create_issue":
+            result = await github_client.create_issue(
+                title=args.get("title", ""), body=args.get("body", ""),
+                labels=args.get("labels"), owner=owner, repo=repo)
+        elif action == "comment_issue":
+            result = await github_client.comment_on_issue(
+                number=args.get("number", 0), body=args.get("body", ""), owner=owner, repo=repo)
+        elif action == "list_branches":
+            result = await github_client.list_branches(owner=owner, repo=repo)
+        elif action == "create_branch":
+            result = await github_client.create_branch(
+                branch_name=args.get("branch", ""), from_branch=args.get("base"), owner=owner, repo=repo)
+        elif action == "search_code":
+            result = await github_client.search_code(query=args.get("query", ""), owner=owner, repo=repo)
+        elif action == "list_commits":
+            result = await github_client.list_commits(
+                branch=args.get("branch"), path=args.get("path"), owner=owner, repo=repo)
+        elif action == "get_file":
+            result = await github_client.get_file_content(path=args.get("path", ""), owner=owner, repo=repo)
+        elif action == "get_pr_diff":
+            diff = await github_client.get_pr_diff(number=args.get("number", 0), owner=owner, repo=repo)
+            result = {"diff": diff[:8000]}
+        else:
+            return {"success": False, "output": f"Unknown GitHub action: {action}"}
+
+        return {"success": True, "output": json.dumps(result, default=str)}
+    except Exception as e:
+        return {"success": False, "output": f"GitHub error: {str(e)}"}
+
+
+async def _tool_spawn_subagents(task: str, max_parallel: int) -> dict:
+    """Spawn sub-agents for complex tasks."""
+    try:
+        from sub_agents import sub_agent_orchestrator
+        result = await sub_agent_orchestrator.run(task, max_parallel=max_parallel)
+        return {
+            "success": True,
+            "output": result.get("synthesis", result.get("error", "No result")),
+        }
+    except Exception as e:
+        return {"success": False, "output": f"Sub-agent error: {str(e)}"}
+
+
+async def _tool_analyze_image(image: str, prompt: str, mode: str, images: list) -> dict:
+    """Image analysis via vision engine."""
+    try:
+        from vision_engine import vision_engine
+        if mode == "ocr":
+            result = await vision_engine.extract_text(image)
+        elif mode == "ui_analysis":
+            result = await vision_engine.analyze_ui(image)
+        elif mode == "compare" and images:
+            result = await vision_engine.compare_images(images, prompt=prompt or None)
+        else:
+            result = await vision_engine.analyze(image, prompt=prompt or "Describe this image in detail.")
+        if result.get("success"):
+            return {"success": True, "output": result.get("analysis", "")}
+        return {"success": False, "output": result.get("error", "Vision analysis failed")}
+    except Exception as e:
+        return {"success": False, "output": f"Vision error: {str(e)}"}
+
+
+async def _tool_computer_use(args: dict) -> dict:
+    """Browser automation via computer use engine."""
+    try:
+        from computer_use import computer_use as cu_engine
+        action = args.get("action", "")
+
+        if action == "navigate":
+            result = await cu_engine.navigate(args.get("url", ""))
+        elif action == "screenshot":
+            result = await cu_engine.screenshot(
+                full_page=args.get("full_page", False), selector=args.get("selector"))
+        elif action == "click":
+            result = await cu_engine.click(
+                selector=args.get("selector"), x=args.get("x"), y=args.get("y"))
+        elif action == "type":
+            result = await cu_engine.type_text(
+                text=args.get("text", ""), selector=args.get("selector"))
+        elif action == "press_key":
+            result = await cu_engine.press_key(args.get("key", "Enter"))
+        elif action == "scroll":
+            result = await cu_engine.scroll(
+                direction=args.get("direction", "down"), amount=args.get("amount", 500),
+                selector=args.get("selector"))
+        elif action == "get_content":
+            result = await cu_engine.get_page_content(selector=args.get("selector"))
+        elif action == "evaluate_js":
+            result = await cu_engine.evaluate_js(args.get("script", ""))
+        elif action == "wait_for":
+            result = await cu_engine.wait_for(selector=args.get("selector"))
+        elif action == "get_elements":
+            result = await cu_engine.get_elements(args.get("selector", "*"))
+        elif action == "session_info":
+            result = await cu_engine.get_session_info()
+        elif action == "find_and_click":
+            result = await cu_engine.find_and_click(
+                text=args.get("text", ""), tag=args.get("tag"))
+        elif action == "find_and_type":
+            result = await cu_engine.find_and_type(
+                label=args.get("label", ""), value=args.get("value", args.get("text", "")))
+        elif action == "handle_consent":
+            result = await cu_engine.handle_consent()
+        else:
+            return {"success": False, "output": f"Unknown computer_use action: {action}"}
+
+        return {"success": result.get("success", False),
+                "output": json.dumps(result, default=str)[:8000]}
+    except Exception as e:
+        return {"success": False, "output": f"Computer use error: {str(e)}"}
+
+
+async def _tool_mcp_connect(args: dict) -> dict:
+    """MCP server management."""
+    try:
+        from mcp_client import mcp_manager
+        action = args.get("action", "connect")
+        server_id = args.get("server_id", "")
+
+        if action == "connect":
+            command = args.get("command", "")
+            cmd_args = args.get("args", [])
+            url = args.get("url", "")
+            if url:
+                transport_type = "sse"
+            elif command:
+                transport_type = "stdio"
+            else:
+                return {"success": False, "output": "Provide command (stdio) or url (SSE)"}
+
+            await mcp_manager.add_server(server_id, transport_type,
+                                         command=command, args=cmd_args, url=url)
+            tools = mcp_manager.get_all_tool_definitions()
+            return {"success": True, "output": f"Connected to '{server_id}'. {len(tools)} MCP tools available."}
+
+        elif action == "disconnect":
+            await mcp_manager.remove_server(server_id)
+            return {"success": True, "output": f"Disconnected from '{server_id}'"}
+
+        elif action == "list":
+            status = mcp_manager.get_status()
+            return {"success": True, "output": json.dumps(status, default=str)}
+
+        elif action == "status":
+            status = mcp_manager.get_status()
+            return {"success": True, "output": json.dumps(status, default=str)}
+
+        else:
+            return {"success": False, "output": f"Unknown MCP action: {action}"}
+    except Exception as e:
+        return {"success": False, "output": f"MCP error: {str(e)}"}
 
 
 # ── Implementations ───────────────────────────────────────────────────────────

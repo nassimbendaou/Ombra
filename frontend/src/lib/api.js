@@ -278,6 +278,65 @@ export const streamChat = (message, sessionId, forceProvider, whiteCardMode, age
   };
 };
 
+// ── MCP Servers ──────────────────────────────────────────────────────────────
+export const getMcpStatus = () => fetchAPI('/mcp/status');
+export const connectMcpServer = (serverId, command, args, url) =>
+  fetchAPI('/mcp/connect', { method: 'POST', body: JSON.stringify({ server_id: serverId, command, args, url }) });
+export const disconnectMcpServer = (serverId) =>
+  fetchAPI(`/mcp/${serverId}`, { method: 'DELETE' });
+
+// ── Plugin Hooks ─────────────────────────────────────────────────────────────
+export const getHooks = () => fetchAPI('/hooks');
+export const getHooksLog = (limit = 50) => fetchAPI(`/hooks/log?limit=${limit}`);
+export const enableHook = (hookId) => fetchAPI(`/hooks/${hookId}/enable`, { method: 'POST' });
+export const disableHook = (hookId) => fetchAPI(`/hooks/${hookId}/disable`, { method: 'POST' });
+
+// ── Codebase Intelligence ────────────────────────────────────────────────────
+export const getCodebaseGraph = (directory) =>
+  fetchAPI(`/codebase/graph${directory ? `?directory=${encodeURIComponent(directory)}` : ''}`);
+export const searchCodebase = (query, searchType = 'symbol') =>
+  fetchAPI(`/codebase/search?q=${encodeURIComponent(query)}&search_type=${searchType}`);
+
+// ── RAG / Vector Embeddings ──────────────────────────────────────────────────
+export const indexRag = (directory) =>
+  fetchAPI('/rag/index', { method: 'POST', body: JSON.stringify({ directory }) });
+export const searchRag = (query, scope = 'all', topK = 5) =>
+  fetchAPI(`/rag/search?q=${encodeURIComponent(query)}&scope=${scope}&top_k=${topK}`);
+
+// ── GitHub Integration ───────────────────────────────────────────────────────
+export const getGithubStatus = () => fetchAPI('/github/status');
+export const getGithubConfig = () => fetchAPI('/github/config');
+export const setGithubConfig = (owner, repo, token) => fetchAPI('/github/config', {
+  method: 'POST', body: JSON.stringify({ owner, repo, token }),
+});
+
+// ── Vision ───────────────────────────────────────────────────────────────────
+export const analyzeImage = (image, prompt, mode = 'describe') =>
+  fetchAPI('/vision/analyze', { method: 'POST', body: JSON.stringify({ image, prompt, mode }) });
+
+// ── Context Engine ───────────────────────────────────────────────────────────
+export const buildContext = (message, maxTokens = 4000) =>
+  fetchAPI('/context/build', { method: 'POST', body: JSON.stringify({ message, max_tokens: maxTokens }) });
+
+// ── Sub-Agents ───────────────────────────────────────────────────────────────
+export const runSubAgents = (task, maxParallel = 3) =>
+  fetchAPI('/subagents/run', { method: 'POST', body: JSON.stringify({ task, max_parallel: maxParallel }) });
+
+// ── Streaming Channels ──────────────────────────────────────────────────────
+export const getStreamChannels = () => fetchAPI('/stream');
+
+// ── Claude / Anthropic ───────────────────────────────────────────────────────
+export const getClaudeStatus = () => fetchAPI('/settings/claude');
+export const setClaudeKey = (apiKey) =>
+  fetchAPI('/settings/claude', { method: 'POST', body: JSON.stringify({ api_key: apiKey }) });
+
+// ── Bastion / RDP ────────────────────────────────────────────────────────────
+export const getBastionStatus = () => fetchAPI('/bastion/status');
+export const setupBastion = (username, password) =>
+  fetchAPI('/bastion/setup', { method: 'POST', body: JSON.stringify({ username, password }) });
+export const restartBastion = () =>
+  fetchAPI('/bastion/restart', { method: 'POST' });
+
 // WebSocket connection for typing indicators and live events
 export const connectWebSocket = (onMessage) => {
   const wsBase = (process.env.REACT_APP_BACKEND_URL || window.location.origin)
