@@ -1400,7 +1400,9 @@ async def chat_stream_endpoint(req: ChatRequest):
                 "4. Never leave placeholder values like `YOUR_API_KEY` — pull real values from env vars.\n"
                 "5. When a tool call fails, read the error, fix the root cause, and retry — do NOT repeat the same call blindly.\n"
                 "6. Limit yourself to 3 retry attempts per tool call; after that, report the failure to the user.\n"
-                "7. For any non-trivial code, write at least one quick validation test before considering the task complete."
+                "7. For any non-trivial code, write at least one quick validation test before considering the task complete.\n"
+                "8. When a tool returns a preview_url or any URL, ALWAYS use that EXACT URL. NEVER fabricate, shorten, or invent URLs. Copy the URL verbatim from the tool result.\n"
+                "9. NEVER wrap URLs in markdown bold (**), italics (*), or backticks (`). URLs must be plain text or in a markdown link like [text](url). Formatting characters break the link."
                 "\n\n## Browser Autonomy (computer_use tool)\n"
                 "When you need to interact with a website:\n"
                 "1. FIRST: navigate to the URL — this auto-returns all interactive elements (buttons, links, inputs).\n"
@@ -1416,7 +1418,7 @@ async def chat_stream_endpoint(req: ChatRequest):
             async for event in stream_agent_loop(
                 message=req.message,
                 system_prompt=soul + tools_hint + (req.white_card_mode and "\n\nYou are in 'White Card' mode." or ""),
-                model="gpt-4o",
+                model="claude-sonnet-4-5-20250929",
                 session_id=session_id,
                 db=db,
                 tools_enabled=True,
@@ -1602,7 +1604,9 @@ async def chat_endpoint(req: ChatRequest):
             "4. Never leave placeholder values like `YOUR_API_KEY` — pull real values from env vars.\n"
             "5. When a tool call fails, read the error, fix the root cause, and retry — do NOT repeat the same call blindly.\n"
             "6. Limit yourself to 3 retry attempts per tool call; after that, report the failure to the user.\n"
-            "7. For any non-trivial code, write at least one quick validation test before considering the task complete."
+            "7. For any non-trivial code, write at least one quick validation test before considering the task complete.\n"
+            "8. When a tool returns a preview_url or any URL, ALWAYS use that EXACT URL. NEVER fabricate, shorten, or invent URLs. Copy the URL verbatim from the tool result.\n"
+            "9. NEVER wrap URLs in markdown bold (**), italics (*), or backticks (`). URLs must be plain text or in a markdown link like [text](url). Formatting characters break the link."
             "\n\n## Browser Autonomy (computer_use tool)\n"
             "When you need to interact with a website:\n"
             "1. FIRST: navigate to the URL — this auto-returns all interactive elements (buttons, links, inputs).\n"
@@ -1615,7 +1619,7 @@ async def chat_endpoint(req: ChatRequest):
         extra_ctx = []
         if context:
             extra_ctx = [{"role": "system", "content": f"Conversation context:\n{context}"}]
-        model = "gpt-4o"
+        model = "claude-sonnet-4-5-20250929"
         agent_result = await run_agent_loop(
             message=req.message,
             system_prompt=soul + tools_hint + system_addition,
@@ -1627,8 +1631,8 @@ async def chat_endpoint(req: ChatRequest):
         )
         result = {
             "response": agent_result["response"],
-            "provider_used": "openai",
-            "model_used": model,
+            "provider_used": "anthropic" if agent_result["model"].startswith("claude") else "openai",
+            "model_used": agent_result["model"],
             "routing": {"route": "agent_loop", "iterations": agent_result["iterations"]},
             "fallback_chain": [],
             "duration_ms": agent_result["duration_ms"],

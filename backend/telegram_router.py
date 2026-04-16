@@ -603,7 +603,7 @@ class TelegramRouter:
                 extra_ctx = []
                 if context:
                     extra_ctx = [{"role": "system", "content": f"Conversation context:\n{context}"}]
-                model = state.get("model") or "gpt-4o"
+                model = state.get("model") or "claude-sonnet-4-5-20250929"
                 agent_result = await self.run_agent_loop(
                     message=question,
                     system_prompt=soul + system_addition + telegram_system + mcp_tg_hint,
@@ -614,8 +614,8 @@ class TelegramRouter:
                     extra_context=extra_ctx,
                 )
                 response_text = agent_result["response"]
-                provider_used = "openai"
-                model_used = model
+                provider_used = "anthropic" if agent_result["model"].startswith("claude") else "openai"
+                model_used = agent_result["model"]
                 routing = {"route": "agent_loop", "iterations": agent_result["iterations"]}
                 duration = agent_result["duration_ms"]
                 tool_calls_made = agent_result.get("tool_calls", [])

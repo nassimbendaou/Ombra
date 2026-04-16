@@ -1,5 +1,7 @@
 import React from 'react';
 import { motion } from 'framer-motion';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import ModelBadge from './ModelBadge';
 import { User, Zap, Clock } from 'lucide-react';
 
@@ -29,7 +31,29 @@ export default function MessageBubble({ message, showReasoning = false }) {
             ? 'bg-secondary/60 border border-border/60'
             : 'bg-card/70 border border-border/60'
         }`}>
-          <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
+          {isUser ? (
+            <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
+          ) : (
+            <div className="text-sm leading-relaxed prose prose-invert prose-sm max-w-none
+              prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5
+              prose-headings:mt-3 prose-headings:mb-1
+              prose-a:text-primary prose-a:no-underline hover:prose-a:underline
+              prose-code:text-primary/90 prose-code:bg-primary/10 prose-code:px-1 prose-code:rounded
+              prose-pre:bg-black/40 prose-pre:border prose-pre:border-border/40 prose-pre:rounded-lg">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}
+                components={{
+                  a: ({ href, children }) => (
+                    <a href={href} target="_blank" rel="noopener noreferrer"
+                       className="text-primary hover:underline break-all">
+                      {children}
+                    </a>
+                  ),
+                }}
+              >
+                {message.content}
+              </ReactMarkdown>
+            </div>
+          )}
         </div>
 
         {/* Meta row */}

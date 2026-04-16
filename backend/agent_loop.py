@@ -44,9 +44,9 @@ def _get_anthropic_key():
 
 # ── Model fallback chain ─────────────────────────────────────────────────────
 FALLBACK_CHAINS = {
-    "gpt-4o": ["gpt-4o-mini", "claude-sonnet-4-5-20250514"],
-    "gpt-4o-mini": ["gpt-4o", "claude-sonnet-4-5-20250514"],
-    "claude-sonnet-4-5-20250514": ["gpt-4o", "gpt-4o-mini"],
+    "claude-sonnet-4-5-20250929": ["gpt-4o", "gpt-4o-mini"],
+    "gpt-4o": ["gpt-4o-mini", "claude-sonnet-4-5-20250929"],
+    "gpt-4o-mini": ["gpt-4o", "claude-sonnet-4-5-20250929"],
 }
 
 
@@ -70,7 +70,7 @@ def _assistant_message_to_dict(message):
         payload["tool_calls"] = tool_calls
     return payload
 
-DEFAULT_MODEL = "gpt-4o"
+DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
 MAX_ITERATIONS = 12
 
 # ── Helper: call Anthropic (Claude) with tool support ─────────────────────────
@@ -233,10 +233,8 @@ async def _call_llm(messages: list, model: str, tools: list, stream: bool = Fals
             if m.startswith("claude"):
                 if not _get_anthropic_key():
                     continue
-                if stream:
-                    # For streaming, fall through to OpenAI models
-                    continue
-                return await _call_anthropic(messages, m, tools, stream=stream), m
+                # Claude uses non-streaming internally; caller handles simulation
+                return await _call_anthropic(messages, m, tools, stream=False), m
             else:
                 result = await _call_openai(messages, m, tools, stream=stream)
                 return result, m

@@ -1701,7 +1701,7 @@ async def _tool_browser_research(url: str, query: str = "", click_selector: str 
         }
         if preview:
             result["preview_url"] = preview
-            result["output"] += f"\n\nScreenshot preview: {preview}"
+            result["output"] += f"\n\nScreenshot ready. SHARE THIS EXACT LINK with the user (do NOT invent a URL): {preview}"
         return result
     except Exception as e:
         return {"success": False, "output": f"Browser research failed: {str(e)}", "url": url}
@@ -1764,14 +1764,14 @@ async def _tool_screenshot(url: str, full_page: bool = False, width: int = 1280,
 
         result = {
             "success": True,
-            "output": f"Screenshot taken: {screenshot_path} ({size} bytes, {width}x{height})",
+            "output": f"Screenshot taken ({size} bytes, {width}x{height})",
             "path": screenshot_path,
             "title": title,
             "url": url,
         }
         if preview:
             result["preview_url"] = preview
-            result["output"] += f"\nPreview: {preview}"
+            result["output"] = f"Screenshot ready. SHARE THIS EXACT LINK with the user (do NOT invent a URL): {preview}"
         return result
     except Exception as e:
         return {"success": False, "output": f"Screenshot failed: {str(e)}", "url": url}
