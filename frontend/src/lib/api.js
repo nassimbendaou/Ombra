@@ -386,3 +386,44 @@ export const createSkill = (id, content) =>
   fetchAPI('/skills', { method: 'POST', body: JSON.stringify({ id, content }) });
 export const deleteSkill = (skillId) =>
   fetchAPI(`/skills/${skillId}`, { method: 'DELETE' });
+
+// ── Security Center (Blue Team) ─────────────────────────────────────────────
+export const securityPortScan = (host = 'localhost', ports = null, timeout = 2.0) =>
+  fetchAPI('/security/port-scan', { method: 'POST', body: JSON.stringify({ host, ports, timeout }) });
+export const securitySslCheck = (host, port = 443) =>
+  fetchAPI('/security/ssl-check', { method: 'POST', body: JSON.stringify({ host, port }) });
+export const securitySystemAudit = () =>
+  fetchAPI('/security/system-audit', { method: 'POST' });
+export const securityLogAnalysis = (logPaths = null, lines = 2000) =>
+  fetchAPI('/security/log-analysis', { method: 'POST', body: JSON.stringify({ log_paths: logPaths, lines }) });
+export const securityDnsCheck = (domain) =>
+  fetchAPI('/security/dns-check', { method: 'POST', body: JSON.stringify({ domain }) });
+export const securityHttpHeaders = (url) =>
+  fetchAPI('/security/http-headers', { method: 'POST', body: JSON.stringify({ url }) });
+export const securityFileHashes = (paths) =>
+  fetchAPI('/security/file-hashes', { method: 'POST', body: JSON.stringify({ paths }) });
+export const securityIntegrityCheck = (baseline, current) =>
+  fetchAPI('/security/integrity-check', { method: 'POST', body: JSON.stringify({ baseline, current }) });
+export const securityDepScan = (projectPath = '/home/azureuser/Ombra') =>
+  fetchAPI('/security/dep-scan', { method: 'POST', body: JSON.stringify({ project_path: projectPath }) });
+export const securityIpLookup = (ip) =>
+  fetchAPI('/security/ip-lookup', { method: 'POST', body: JSON.stringify({ ip }) });
+export const securityFullScan = (host = 'localhost') =>
+  fetchAPI('/security/full-scan', { method: 'POST', body: JSON.stringify({ host }) });
+export const securityHistory = (scanType = null, limit = 20) =>
+  fetchAPI(`/security/history?${scanType ? `scan_type=${scanType}&` : ''}limit=${limit}`);
+export const securityDashboard = () => fetchAPI('/security/dashboard');
+
+// ── External Recon ──────────────────────────────────────────────────────────
+export const securityWhois = (target) =>
+  fetchAPI('/security/whois', { method: 'POST', body: JSON.stringify({ target }) });
+export const securitySubdomains = (domain) =>
+  fetchAPI('/security/subdomains', { method: 'POST', body: JSON.stringify({ domain }) });
+export const securityTechFingerprint = (url) =>
+  fetchAPI('/security/tech-fingerprint', { method: 'POST', body: JSON.stringify({ url }) });
+export const securityTraceroute = (host, maxHops = 20) =>
+  fetchAPI('/security/traceroute', { method: 'POST', body: JSON.stringify({ host, max_hops: maxHops }) });
+export const securityBannerGrab = (host, ports = null) =>
+  fetchAPI('/security/banner-grab', { method: 'POST', body: JSON.stringify({ host, ports }) });
+export const securityWayback = (url, limit = 20) =>
+  fetchAPI('/security/wayback', { method: 'POST', body: JSON.stringify({ url, limit }) });

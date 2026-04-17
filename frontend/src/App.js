@@ -20,6 +20,7 @@ import GithubIntegration from './pages/GithubIntegration';
 import PluginHooks from './pages/PluginHooks';
 import ToolsLab from './pages/ToolsLab';
 import Bastion from './pages/Bastion';
+import SecurityCenter from './pages/SecurityCenter';
 import { Toaster } from './components/ui/sonner';
 import './App.css';
 
@@ -48,6 +49,7 @@ function App() {
             <Route path="/hooks" element={<PluginHooks />} />
             <Route path="/tools-lab" element={<ToolsLab />} />
             <Route path="/bastion" element={<Bastion />} />
+            <Route path="/security" element={<SecurityCenter />} />
           </Route>
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>

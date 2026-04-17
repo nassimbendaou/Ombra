@@ -71,6 +71,13 @@ from workspace_loader import (
 # New module imports
 from plugin_hooks import hook_manager, register_default_hooks
 from streaming import stream_manager, StreamEventType, sse_generator
+from security_tools import (
+    scan_ports, check_ssl, audit_system, analyze_logs,
+    check_dns, check_http_headers, compute_file_hashes,
+    check_file_integrity, scan_dependencies, lookup_ip_reputation,
+    full_security_scan, whois_lookup, enumerate_subdomains,
+    fingerprint_technology, run_traceroute, grab_banners, wayback_lookup
+)
 
 # Load persistent .env file (survives restarts, written by set_claude_key etc.)
 _ENV_FILE = os.path.join(os.path.dirname(__file__), ".env")
@@ -4324,5 +4331,243 @@ async def build_context(message: str, max_tokens: int = 4000):
             max_tokens=max_tokens,
         )
         return context
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Security Center (Blue Team) ─────────────────────────────────────────────
+
+@app.post("/api/security/port-scan")
+async def api_port_scan(request: Request):
+    body = await request.body()
+    data = json.loads(body) if body else {}
+    host = data.get("host", "localhost")
+    ports = data.get("ports")
+    timeout = data.get("timeout", 2.0)
+    try:
+        result = await scan_ports(host, ports, timeout)
+        scan_col = db["security_scans"]
+        scan_col.insert_one({**result, "type": "port_scan"})
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/security/ssl-check")
+async def api_ssl_check(request: Request):
+    data = await request.json()
+    try:
+        result = await check_ssl(data["host"], data.get("port", 443))
+        scan_col = db["security_scans"]
+        scan_col.insert_one({**result, "type": "ssl_check"})
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/security/system-audit")
+async def api_system_audit():
+    try:
+        result = await audit_system()
+        scan_col = db["security_scans"]
+        scan_col.insert_one({**result, "type": "system_audit"})
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/security/log-analysis")
+async def api_log_analysis(request: Request):
+    body = await request.body()
+    data = json.loads(body) if body else {}
+    try:
+        result = await analyze_logs(data.get("log_paths"), data.get("lines", 2000))
+        scan_col = db["security_scans"]
+        scan_col.insert_one({**result, "type": "log_analysis"})
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/security/dns-check")
+async def api_dns_check(request: Request):
+    data = await request.json()
+    try:
+        return await check_dns(data["domain"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/security/http-headers")
+async def api_http_headers(request: Request):
+    data = await request.json()
+    try:
+        result = await check_http_headers(data["url"])
+        scan_col = db["security_scans"]
+        scan_col.insert_one({**result, "type": "http_headers"})
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/security/file-hashes")
+async def api_file_hashes(request: Request):
+    data = await request.json()
+    try:
+        return await compute_file_hashes(data["paths"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/security/integrity-check")
+async def api_integrity_check(request: Request):
+    data = await request.json()
+    try:
+        return await check_file_integrity(data["baseline"], data["current"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/security/dep-scan")
+async def api_dep_scan(request: Request):
+    body = await request.body()
+    data = json.loads(body) if body else {}
+    try:
+        return await scan_dependencies(data.get("project_path", "/home/azureuser/Ombra"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/security/ip-lookup")
+async def api_ip_lookup(request: Request):
+    data = await request.json()
+    try:
+        return await lookup_ip_reputation(data["ip"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/security/full-scan")
+async def api_full_scan(request: Request):
+    body = await request.body()
+    data = json.loads(body) if body else {}
+    try:
+        result = await full_security_scan(data.get("host", "localhost"))
+        scan_col = db["security_scans"]
+        scan_col.insert_one({**result, "type": "full_scan"})
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/security/history")
+async def api_security_history(scan_type: str = None, limit: int = 20):
+    try:
+        scan_col = db["security_scans"]
+        query = {}
+        if scan_type:
+            query["type"] = scan_type
+        scans = list(scan_col.find(query, {"_id": 0}).sort("scan_time", DESCENDING).limit(limit))
+        return {"scans": scans, "total": scan_col.count_documents(query)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/security/dashboard")
+async def api_security_dashboard():
+    """Aggregated security overview for the dashboard."""
+    try:
+        scan_col = db["security_scans"]
+        latest = {}
+        for stype in ["port_scan", "system_audit", "log_analysis", "ssl_check", "http_headers", "full_scan"]:
+            doc = scan_col.find_one({"type": stype}, {"_id": 0}, sort=[("scan_time", DESCENDING)])
+            if doc:
+                latest[stype] = doc
+
+        overall_score = None
+        if "full_scan" in latest and "overall_score" in latest["full_scan"]:
+            overall_score = latest["full_scan"]["overall_score"]
+        elif "system_audit" in latest and "summary" in latest["system_audit"]:
+            overall_score = latest["system_audit"]["summary"].get("score")
+
+        alerts = []
+        if "log_analysis" in latest:
+            alerts.extend(latest["log_analysis"].get("alerts", []))
+        if "system_audit" in latest:
+            for f in latest["system_audit"].get("findings", [])[:5]:
+                if f["severity"] in ("critical", "high"):
+                    alerts.append({"type": f["category"], "severity": f["severity"], "message": f["finding"]})
+
+        return {
+            "overall_score": overall_score,
+            "overall_grade": "A" if (overall_score or 0) >= 90 else "B" if (overall_score or 0) >= 75 else "C" if (overall_score or 0) >= 60 else "D" if (overall_score or 0) >= 40 else "F",
+            "latest_scans": {k: v.get("scan_time") for k, v in latest.items()},
+            "alerts": alerts[:10],
+            "port_summary": latest.get("port_scan", {}).get("summary"),
+            "system_summary": latest.get("system_audit", {}).get("summary"),
+            "log_summary": latest.get("log_analysis", {}).get("summary"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ── External Recon Endpoints ─────────────────────────────────────────────────
+
+@app.post("/api/security/whois")
+async def api_whois(request: Request):
+    body = await request.body()
+    data = json.loads(body) if body else {}
+    try:
+        result = await whois_lookup(data["target"])
+        scan_col = db["security_scans"]
+        scan_col.insert_one({**result, "type": "whois"})
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/security/subdomains")
+async def api_subdomains(request: Request):
+    body = await request.body()
+    data = json.loads(body) if body else {}
+    try:
+        result = await enumerate_subdomains(data["domain"])
+        scan_col = db["security_scans"]
+        scan_col.insert_one({**result, "type": "subdomains"})
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/security/tech-fingerprint")
+async def api_tech_fingerprint(request: Request):
+    body = await request.body()
+    data = json.loads(body) if body else {}
+    try:
+        result = await fingerprint_technology(data["url"])
+        scan_col = db["security_scans"]
+        scan_col.insert_one({**result, "type": "tech_fingerprint"})
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/security/traceroute")
+async def api_traceroute(request: Request):
+    body = await request.body()
+    data = json.loads(body) if body else {}
+    try:
+        result = await run_traceroute(data["host"], data.get("max_hops", 20))
+        scan_col = db["security_scans"]
+        scan_col.insert_one({**result, "type": "traceroute"})
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/security/banner-grab")
+async def api_banner_grab(request: Request):
+    body = await request.body()
+    data = json.loads(body) if body else {}
+    try:
+        result = await grab_banners(data["host"], data.get("ports"))
+        scan_col = db["security_scans"]
+        scan_col.insert_one({**result, "type": "banner_grab"})
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/security/wayback")
+async def api_wayback(request: Request):
+    body = await request.body()
+    data = json.loads(body) if body else {}
+    try:
+        result = await wayback_lookup(data["url"], data.get("limit", 20))
+        scan_col = db["security_scans"]
+        scan_col.insert_one({**result, "type": "wayback"})
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
