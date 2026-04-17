@@ -13,6 +13,8 @@ import socket
 import ssl
 import hashlib
 import platform
+import ipaddress
+from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -852,6 +854,49 @@ async def enumerate_subdomains(domain: str) -> dict:
 
 # ── Technology Fingerprinting ────────────────────────────────────────────────
 
+def _is_public_ip(ip: str) -> bool:
+    try:
+        parsed = ipaddress.ip_address(ip)
+        return not (
+            parsed.is_private
+            or parsed.is_loopback
+            or parsed.is_link_local
+            or parsed.is_multicast
+            or parsed.is_reserved
+            or parsed.is_unspecified
+        )
+    except ValueError:
+        return False
+
+
+def _is_safe_target_url(raw_url: str) -> tuple[bool, str]:
+    try:
+        parsed = urlparse(raw_url)
+    except Exception:
+        return False, "Invalid URL format"
+
+    if parsed.scheme not in ("http", "https"):
+        return False, "Only http/https URLs are allowed"
+
+    if not parsed.hostname:
+        return False, "URL must include a valid hostname"
+
+    try:
+        addr_info = socket.getaddrinfo(parsed.hostname, None)
+    except Exception:
+        return False, "Hostname could not be resolved"
+
+    resolved_ips = {entry[4][0] for entry in addr_info if entry and entry[4]}
+    if not resolved_ips:
+        return False, "Hostname resolved to no IP addresses"
+
+    for ip in resolved_ips:
+        if not _is_public_ip(ip):
+            return False, "Target resolves to a non-public IP address"
+
+    return True, ""
+
+
 async def fingerprint_technology(url: str) -> dict:
     """Detect web technologies, frameworks, servers, and CMS from HTTP response."""
     import httpx
@@ -864,8 +909,12 @@ async def fingerprint_technology(url: str) -> dict:
         "meta_info": {},
     }
 
+    is_safe, validation_error = _is_safe_target_url(url)
+    if not is_safe:
+        return {"error": validation_error, "url": url}
+
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=15, verify=False) as client:
+        async with httpx.AsyncClient(follow_redirects=False, timeout=15, verify=True) as client:
             resp = await client.get(url)
             headers = dict(resp.headers)
             body = resp.text[:100000]
