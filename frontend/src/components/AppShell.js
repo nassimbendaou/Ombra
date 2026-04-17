@@ -28,6 +28,7 @@ const navItems = [
   { path: '/hooks', icon: Webhook, label: 'Hooks' },
   { path: '/tools-lab', icon: FlaskConical, label: 'Tools Lab' },
   { path: '/bastion', icon: Monitor, label: 'Bastion' },
+  { path: '/security', icon: Shield, label: 'Security' },
   { path: '/activity', icon: Activity, label: 'Activity' },
   { path: '/settings', icon: Settings, label: 'Settings' },
 ];
